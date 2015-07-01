@@ -104,6 +104,9 @@ You still have to customize your theme to make it look right. Please refer to [t
 
 == Changelog ==
 
+= 2.9.1 =
+* Fixed undefined variable.
+
 = 2.9 =
 * Adds option to create a custom category that allows you to handle link list items differently
 
