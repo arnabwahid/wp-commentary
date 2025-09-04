@@ -1,18 +1,17 @@
 # WP Linked List
-Contributors: Arnab Wahid
+```
+Contributors: Arnab Wahid, peiche, Kevin Dayton, YJ Soon
 Tags: linklog, linked list, external links, blogging, feeds
 Requires at least: 6.3
 Tested up to: 6.7
 Requires PHP: 8.1
 Stable tag: 1.3.0
-License: MIT
-License URI: https://opensource.org/licenses/MIT
-
+```
 Create Daring Fireball–style link posts in WordPress. Register a “Linked List” post type, add external link support, optional redirection, feed adjustments, UTM tracking, and more — without changing your theme.
 
 ## Description
 
-Linked List brings [Daring Fireball](https://daringfireball.net/)–style link blogging to WordPress, with no theme hacking required.
+WP Linked List brings Daring Fireball style link blogging to WordPress, with no theme hacking required.
 
 * Registers a new custom post type called **Linked List**. Each item is a **Linked Post**.
 * Each Linked Post includes a **Link URL** meta field where you paste the external link.
@@ -101,7 +100,6 @@ Append `?stay=1` to the post URL, e.g. `/linked-list/my-post/?stay=1`.
 ## Changelog
 
 ### 1.3.0
-* Rename plugin and text domain to **Linked List**.
 * Improved toggle labels:  
   - “Don’t auto-redirect this post” with tooltip *“Show post content instead of redirecting”*.  
   - “Use post permalink in lists” with tooltip *“Link titles to post page (not external site)”*.  

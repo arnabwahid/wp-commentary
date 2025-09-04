@@ -6,7 +6,7 @@
  * Requires at least: 6.3
  * Tested up to:      6.7
  * Requires PHP:      8.1
- * Author:            Refactor by Arnab Wahid (Initial: YJ Soon)
+ * Author:            Refactor by Arnab Wahid (Previously: peiche, Kevin Dayton, YJ Soon)
  * License:           MIT
  * Text Domain:       linked-list
  */
