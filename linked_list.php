@@ -1,14 +1,14 @@
 <?php
 /**
- * Plugin Name:       LinkLog
- * Description:       Zero-theme-changes Daring Fireball–style link blogging. Registers a “Linked List” post type (“Linked Post” items) with a Link URL field, Gutenberg sidebar (with classic fallback), per-post overrides, optional on-site ↩︎ permalink glyph, UTM auto-append, and DF-style feed behavior.
- * Version:           1.2.0
+ * Plugin Name:       Linked List
+ * Description:       Link blogging with a “Linked List” post type (“Linked Post” items) with a Link URL field, Gutenberg sidebar (with classic fallback), per-post overrides, optional on-site ↩︎ permalink glyph, UTM auto-append, and DF-style feed behavior.
+ * Version:           1.3.0
  * Requires at least: 6.3
  * Tested up to:      6.7
  * Requires PHP:      8.1
- * Author:            (Your Name)
+ * Author:            Refactor by Arnab Wahid (Initial: YJ Soon)
  * License:           MIT
- * Text Domain:       linklog
+ * Text Domain:       linked-list
  */
 
 declare(strict_types=1);
@@ -20,7 +20,7 @@ use WP_Post;
 if (!defined('ABSPATH')) exit;
 
 final class Plugin {
-	public const VERSION = '1.2.0';
+	public const VERSION = '1.3.0';
 
 	// Meta keys (registered with REST for Gutenberg)
 	private const META_URL           = 'linklog_url';            // string
@@ -102,25 +102,25 @@ final class Plugin {
 	public static function register_post_type(): void {
 		register_post_type('linked_list', [
 			'labels' => [
-				'name'                     => __('Linked List', 'linklog'),
-				'singular_name'            => __('Linked Post', 'linklog'),
-				'add_new'                  => __('Add Linked Post', 'linklog'),
-				'add_new_item'             => __('Add New Linked Post', 'linklog'),
-				'edit_item'                => __('Edit Linked Post', 'linklog'),
-				'new_item'                 => __('New Linked Post', 'linklog'),
-				'view_item'                => __('View Linked Post', 'linklog'),
-				'view_items'               => __('View Linked Posts', 'linklog'),
-				'search_items'             => __('Search Linked Posts', 'linklog'),
-				'not_found'                => __('No linked posts found', 'linklog'),
-				'not_found_in_trash'       => __('No linked posts found in Trash', 'linklog'),
-				'all_items'                => __('All Linked Posts', 'linklog'),
-				'archives'                 => __('Linked List Archives', 'linklog'),
-				'item_published'           => __('Linked Post published.', 'linklog'),
-				'item_updated'             => __('Linked Post updated.', 'linklog'),
+				'name'                     => __('Linked List', 'linked-list'),
+				'singular_name'            => __('Linked Post', 'linked-list'),
+				'add_new'                  => __('Add Linked Post', 'linked-list'),
+				'add_new_item'             => __('Add New Linked Post', 'linked-list'),
+				'edit_item'                => __('Edit Linked Post', 'linked-list'),
+				'new_item'                 => __('New Linked Post', 'linked-list'),
+				'view_item'                => __('View Linked Post', 'linked-list'),
+				'view_items'               => __('View Linked Posts', 'linked-list'),
+				'search_items'             => __('Search Linked Posts', 'linked-list'),
+				'not_found'                => __('No linked posts found', 'linked-list'),
+				'not_found_in_trash'       => __('No linked posts found in Trash', 'linked-list'),
+				'all_items'                => __('All Linked Posts', 'linked-list'),
+				'archives'                 => __('Linked List Archives', 'linked-list'),
+				'item_published'           => __('Linked Post published.', 'linked-list'),
+				'item_updated'             => __('Linked Post updated.', 'linked-list'),
 			],
-			'description'        => __('Daring Fireball–style external link posts.', 'linklog'),
+			'description'        => __('Daring Fireball–style external link posts.', 'linked-list'),
 			'public'             => true,
-			'publicly_queryable' => true,     // ✅ ensure front-end is queryable
+			'publicly_queryable' => true,
 			'show_ui'            => true,
 			'show_in_menu'       => true,
 			'show_in_rest'       => true,
@@ -131,7 +131,6 @@ final class Plugin {
 			'supports'           => ['title', 'editor', 'excerpt', 'author', 'thumbnail', 'comments', 'custom-fields'],
 			'rewrite'            => ['slug' => 'linked-list', 'with_front' => false],
 			'map_meta_cap'       => true,
-			// leave capability_type default 'post' for simplicity/policy-compat.
 		]);
 	}
 
@@ -143,7 +142,7 @@ final class Plugin {
 			'auth_callback'     => fn(): bool => current_user_can('edit_posts'),
 			'sanitize_callback' => fn($v): string => esc_url_raw((string) $v),
 			'default'           => '',
-			'description'       => __('External URL for this Linked Post', 'linklog'),
+			'description'       => __('External URL for this Linked Post', 'linked-list'),
 		]);
 
 		foreach ([self::META_SKIP_REDIRECT, self::META_SKIP_REWRITE] as $metaBool) {
@@ -162,10 +161,10 @@ final class Plugin {
 
 	public static function register_settings_page(): void {
 		add_options_page(
-			__('LinkLog Settings', 'linklog'),
-			__('LinkLog', 'linklog'),
+			__('Linked List Settings', 'linked-list'),
+			__('Linked List', 'linked-list'),
 			'manage_options',
-			'linklog',
+			'linked-list',
 			[self::class, 'render_settings_page']
 		);
 	}
@@ -174,50 +173,50 @@ final class Plugin {
 		$cb_bool = static fn($v): string => $v ? 'on' : '';
 		$cb_text = static fn($v): string => is_string($v) ? wp_kses_post($v) : '';
 
-		register_setting('linklog_settings', self::OPT_REDIRECT_SINGLES, ['sanitize_callback' => $cb_bool]);
-		register_setting('linklog_settings', self::OPT_REWRITE_PERMALINKS, ['sanitize_callback' => $cb_bool]);
+		register_setting('linked_list_settings', self::OPT_REDIRECT_SINGLES, ['sanitize_callback' => $cb_bool]);
+		register_setting('linked_list_settings', self::OPT_REWRITE_PERMALINKS, ['sanitize_callback' => $cb_bool]);
 
-		register_setting('linklog_settings', self::OPT_FEED_GLYPH_ENABLE, ['sanitize_callback' => $cb_bool]);
-		register_setting('linklog_settings', self::OPT_FEED_GLYPH_TEXT, ['sanitize_callback' => $cb_text]);
+		register_setting('linked_list_settings', self::OPT_FEED_GLYPH_ENABLE, ['sanitize_callback' => $cb_bool]);
+		register_setting('linked_list_settings', self::OPT_FEED_GLYPH_TEXT, ['sanitize_callback' => $cb_text]);
 
-		register_setting('linklog_settings', self::OPT_SITE_GLYPH_ENABLE, ['sanitize_callback' => $cb_bool]);
-		register_setting('linklog_settings', self::OPT_SITE_GLYPH_TEXT, ['sanitize_callback' => $cb_text]);
+		register_setting('linked_list_settings', self::OPT_SITE_GLYPH_ENABLE, ['sanitize_callback' => $cb_bool]);
+		register_setting('linked_list_settings', self::OPT_SITE_GLYPH_TEXT, ['sanitize_callback' => $cb_text]);
 
-		register_setting('linklog_settings', self::OPT_UTM_ENABLE, ['sanitize_callback' => $cb_bool]);
-		register_setting('linklog_settings', self::OPT_UTM_PRESERVE, ['sanitize_callback' => $cb_bool]);
+		register_setting('linked_list_settings', self::OPT_UTM_ENABLE, ['sanitize_callback' => $cb_bool]);
+		register_setting('linked_list_settings', self::OPT_UTM_PRESERVE, ['sanitize_callback' => $cb_bool]);
 
 		foreach ([self::OPT_UTM_SOURCE, self::OPT_UTM_MEDIUM, self::OPT_UTM_CAMPAIGN, self::OPT_UTM_TERM, self::OPT_UTM_CONTENT] as $opt) {
-			register_setting('linklog_settings', $opt, ['sanitize_callback' => $cb_text]);
+			register_setting('linked_list_settings', $opt, ['sanitize_callback' => $cb_text]);
 		}
 
-		add_settings_section('linklog_main', __('Behavior', 'linklog'), fn() =>
-			print '<p>' . esc_html__('Control rewrite/redirect behavior for Linked Posts.', 'linklog') . '</p>', 'linklog');
+		add_settings_section('linked_list_main', __('Behavior', 'linked-list'), fn() =>
+			print '<p>' . esc_html__('Control rewrite/redirect behavior for Linked Posts.', 'linked-list') . '</p>', 'linked-list');
 
-		self::add_checkbox(self::OPT_REWRITE_PERMALINKS, __('Make Linked Post permalinks across the site point to external URL', 'linklog'), 'linklog_main');
-		self::add_checkbox(self::OPT_REDIRECT_SINGLES, __('Redirect single Linked Post to external URL', 'linklog'), 'linklog_main');
+		self::add_checkbox(self::OPT_REWRITE_PERMALINKS, __('Make Linked Post permalinks across the site point to external URL', 'linked-list'), 'linked_list_main');
+		self::add_checkbox(self::OPT_REDIRECT_SINGLES, __('Redirect single Linked Post to external URL', 'linked-list'), 'linked_list_main');
 
-		add_settings_section('linklog_siteglyph', __('On-site Permalink Glyph', 'linklog'), fn() =>
-			print '<p>' . esc_html__('Append a ↩︎ permalink glyph to Linked Post content on the site (theme-agnostic).', 'linklog') . '</p>', 'linklog');
+		add_settings_section('linked_list_siteglyph', __('On-site Permalink Glyph', 'linked-list'), fn() =>
+			print '<p>' . esc_html__('Append a ↩︎ permalink glyph to Linked Post content on the site (theme-agnostic).', 'linked-list') . '</p>', 'linked-list');
 
-		self::add_checkbox(self::OPT_SITE_GLYPH_ENABLE, __('Enable on-site permalink glyph', 'linklog'), 'linklog_siteglyph');
-		self::add_text(self::OPT_SITE_GLYPH_TEXT, __('Glyph text', 'linklog'), '&#8617;', 'linklog_siteglyph');
+		self::add_checkbox(self::OPT_SITE_GLYPH_ENABLE, __('Enable on-site permalink glyph', 'linked-list'), 'linked_list_siteglyph');
+		self::add_text(self::OPT_SITE_GLYPH_TEXT, __('Glyph text', 'linked-list'), '&#8617;', 'linked_list_siteglyph');
 
-		add_settings_section('linklog_feed', __('Feeds', 'linklog'), fn() =>
-			print '<p>' . esc_html__('Daring Fireball–style feed behavior.', 'linklog') . '</p>', 'linklog');
+		add_settings_section('linked_list_feed', __('Feeds', 'linked-list'), fn() =>
+			print '<p>' . esc_html__('Daring Fireball–style feed behavior.', 'linked-list') . '</p>', 'linked-list');
 
-		self::add_checkbox(self::OPT_FEED_GLYPH_ENABLE, __('Append "back to post" glyph at end of feed content', 'linklog'), 'linklog_feed');
-		self::add_text(self::OPT_FEED_GLYPH_TEXT, __('Feed glyph text', 'linklog'), '&#9733;', 'linklog_feed');
+		self::add_checkbox(self::OPT_FEED_GLYPH_ENABLE, __('Append "back to post" glyph at end of feed content', 'linked-list'), 'linked_list_feed');
+		self::add_text(self::OPT_FEED_GLYPH_TEXT, __('Feed glyph text', 'linked-list'), '&#9733;', 'linked_list_feed');
 
-		add_settings_section('linklog_utm', __('Analytics (UTM)', 'linklog'), fn() =>
-			print '<p>' . esc_html__('Automatically append UTM parameters to external links.', 'linklog') . '</p>', 'linklog');
+		add_settings_section('linked_list_utm', __('Analytics (UTM)', 'linked-list'), fn() =>
+			print '<p>' . esc_html__('Automatically append UTM parameters to external links.', 'linked-list') . '</p>', 'linked-list');
 
-		self::add_checkbox(self::OPT_UTM_ENABLE, __('Enable UTM auto-append', 'linklog'), 'linklog_utm');
-		self::add_checkbox(self::OPT_UTM_PRESERVE, __('Preserve existing UTM parameters (do not overwrite if present)', 'linklog'), 'linklog_utm');
-		self::add_text(self::OPT_UTM_SOURCE, __('utm_source', 'linklog'), '', 'linklog_utm');
-		self::add_text(self::OPT_UTM_MEDIUM, __('utm_medium', 'linklog'), '', 'linklog_utm');
-		self::add_text(self::OPT_UTM_CAMPAIGN, __('utm_campaign', 'linklog'), '', 'linklog_utm');
-		self::add_text(self::OPT_UTM_TERM, __('utm_term', 'linklog'), '', 'linklog_utm');
-		self::add_text(self::OPT_UTM_CONTENT, __('utm_content', 'linklog'), '', 'linklog_utm');
+		self::add_checkbox(self::OPT_UTM_ENABLE, __('Enable UTM auto-append', 'linked-list'), 'linked_list_utm');
+		self::add_checkbox(self::OPT_UTM_PRESERVE, __('Preserve existing UTM parameters (do not overwrite if present)', 'linked-list'), 'linked_list_utm');
+		self::add_text(self::OPT_UTM_SOURCE, __('utm_source', 'linked-list'), '', 'linked_list_utm');
+		self::add_text(self::OPT_UTM_MEDIUM, __('utm_medium', 'linked-list'), '', 'linked_list_utm');
+		self::add_text(self::OPT_UTM_CAMPAIGN, __('utm_campaign', 'linked-list'), '', 'linked_list_utm');
+		self::add_text(self::OPT_UTM_TERM, __('utm_term', 'linked-list'), '', 'linked_list_utm');
+		self::add_text(self::OPT_UTM_CONTENT, __('utm_content', 'linked-list'), '', 'linked_list_utm');
 	}
 
 	private static function add_checkbox(string $opt, string $label, string $section): void {
@@ -228,7 +227,7 @@ final class Plugin {
 				$checked = get_option($opt) ? ' checked' : '';
 				printf('<label><input type="checkbox" name="%1$s" value="on"%2$s /></label>', esc_attr($opt), $checked);
 			},
-			'linklog',
+			'linked-list',
 			$section
 		);
 	}
@@ -242,7 +241,7 @@ final class Plugin {
 				printf('<input type="text" class="regular-text" name="%1$s" value="%2$s" placeholder="%3$s" />',
 					esc_attr($opt), esc_attr($val), esc_attr($placeholder));
 			},
-			'linklog',
+			'linked-list',
 			$section
 		);
 	}
@@ -250,11 +249,11 @@ final class Plugin {
 	public static function render_settings_page(): void {
 		if (!current_user_can('manage_options')) return; ?>
 		<div class="wrap">
-			<h1><?php echo esc_html__('LinkLog Settings', 'linklog'); ?></h1>
+			<h1><?php echo esc_html__('Linked List Settings', 'linked-list'); ?></h1>
 			<form action="options.php" method="post">
 				<?php
-				settings_fields('linklog_settings');
-				do_settings_sections('linklog');
+				settings_fields('linked_list_settings');
+				do_settings_sections('linked-list');
 				submit_button();
 				?>
 			</form>
@@ -265,7 +264,7 @@ final class Plugin {
 	public static function settings_link(array $links, string $file): array {
 		$plugin_file = plugin_basename(__FILE__);
 		if (basename($file) === basename($plugin_file)) {
-			array_unshift($links, '<a href="' . esc_url(admin_url('options-general.php?page=linklog')) . '">' . esc_html__('Settings', 'linklog') . '</a>');
+			array_unshift($links, '<a href="' . esc_url(admin_url('options-general.php?page=linked-list')) . '">' . esc_html__('Settings', 'linked-list') . '</a>');
 		}
 		return $links;
 	}
@@ -286,7 +285,7 @@ final class Plugin {
 			const { registerPlugin } = wp.plugins;
 			const { PluginDocumentSettingPanel } = wp.editPost || {};
 			if ( ! registerPlugin || ! PluginDocumentSettingPanel ) { return; }
-			const { TextControl, ToggleControl } = wp.components;
+			const { TextControl, ToggleControl, Tooltip } = wp.components;
 			const { __ } = wp.i18n;
 			const { useSelect, useDispatch } = wp.data;
 			const { createElement: el } = wp.element;
@@ -299,41 +298,54 @@ final class Plugin {
 				const setMeta = (key, value) => editPost({ meta: { ...meta, [key]: value } });
 
 				return el( PluginDocumentSettingPanel,
-					{ name: 'linklog-panel', title: __('Linked Post', 'linklog'), initialOpen: true },
+					{ name: 'linked-list-panel', title: __('Linked Post', 'linked-list'), initialOpen: true },
+
 					el( TextControl, {
-						label: __('Link URL', 'linklog'),
+						label: __('Link URL', 'linked-list'),
 						value: meta.linklog_url || '',
 						onChange: (v) => setMeta('linklog_url', v),
 						type: 'url',
 						placeholder: 'https://example.com/article'
 					}),
-					el( ToggleControl, {
-						label: __('Skip Redirect', 'linklog'),
-						checked: !!meta.linklog_skip_redirect,
-						onChange: (v) => setMeta('linklog_skip_redirect', !!v)
-					}),
-					el( ToggleControl, {
-						label: __('Skip Rewrite', 'linklog'),
-						checked: !!meta.linklog_skip_rewrite,
-						onChange: (v) => setMeta('linklog_skip_rewrite', !!v)
-					})
+
+					// Toggle: Don’t auto-redirect this post (tooltip on hover)
+					el( Tooltip, { text: __('Show post content instead of redirecting', 'linked-list') },
+						el( 'div', { },
+							el( ToggleControl, {
+								label: __('Don’t auto-redirect this post', 'linked-list'),
+								checked: !!meta.linklog_skip_redirect,
+								onChange: (v) => setMeta('linklog_skip_redirect', !!v)
+							})
+						)
+					),
+
+					// Toggle: Use post permalink in lists (tooltip on hover)
+					el( Tooltip, { text: __('Link titles to post page (not external site)', 'linked-list') },
+						el( 'div', { },
+							el( ToggleControl, {
+								label: __('Use post permalink in lists', 'linked-list'),
+								checked: !!meta.linklog_skip_rewrite,
+								onChange: (v) => setMeta('linklog_skip_rewrite', !!v)
+							})
+						)
+					)
 				);
 			};
 
-			registerPlugin( 'linklog-settings-panel', { render: Panel } );
+			registerPlugin( 'linked-list-settings-panel', { render: Panel } );
 		} )( window.wp );
 		JS;
 		wp_add_inline_script('wp-edit-post', $js, 'after');
 	}
 
-	// Classic editor fallback metabox
+	// Classic editor fallback metabox (with hover tooltips via title attr)
 	public static function maybe_add_classic_metabox(): void {
 		if (function_exists('use_block_editor_for_post_type') && use_block_editor_for_post_type('linked_list')) {
 			return;
 		}
 		add_meta_box(
-			'linklog_url_box',
-			__('Link URL & Overrides', 'linklog'),
+			'linked_list_url_box',
+			__('Link URL & Overrides', 'linked-list'),
 			[self::class, 'render_classic_metabox'],
 			'linked_list',
 			'side',
@@ -348,11 +360,21 @@ final class Plugin {
 		$skip_rewrite  = (bool) get_post_meta($post->ID, self::META_SKIP_REWRITE, true);
 		?>
 		<p>
-			<label for="linklog_url_field" class="screen-reader-text"><?php echo esc_html__('External URL', 'linklog'); ?></label>
-			<input type="url" id="linklog_url_field" name="<?php echo esc_attr(self::META_URL); ?>" value="<?php echo esc_attr((string) $url); ?>" class="widefat" placeholder="https://example.com/article" inputmode="url" />
+			<label for="linked_list_url_field" class="screen-reader-text"><?php echo esc_html__('External URL', 'linked-list'); ?></label>
+			<input type="url" id="linked_list_url_field" name="<?php echo esc_attr(self::META_URL); ?>" value="<?php echo esc_attr((string) $url); ?>" class="widefat" placeholder="https://example.com/article" inputmode="url" />
 		</p>
-		<label><input type="checkbox" name="<?php echo esc_attr(self::META_SKIP_REDIRECT); ?>" value="1" <?php checked(true, $skip_redirect); ?> /> <?php echo esc_html__('Skip Redirect', 'linklog'); ?></label><br/>
-		<label><input type="checkbox" name="<?php echo esc_attr(self::META_SKIP_REWRITE); ?>" value="1" <?php checked(true, $skip_rewrite); ?> /> <?php echo esc_html__('Skip Rewrite', 'linklog'); ?></label>
+		<p>
+			<label title="<?php echo esc_attr__('Show post content instead of redirecting', 'linked-list'); ?>">
+				<input type="checkbox" name="<?php echo esc_attr(self::META_SKIP_REDIRECT); ?>" value="1" <?php checked(true, $skip_redirect); ?> />
+				<?php echo esc_html__('Don’t auto-redirect this post', 'linked-list'); ?>
+			</label>
+		</p>
+		<p>
+			<label title="<?php echo esc_attr__('Link titles to post page (not external site)', 'linked-list'); ?>">
+				<input type="checkbox" name="<?php echo esc_attr(self::META_SKIP_REWRITE); ?>" value="1" <?php checked(true, $skip_rewrite); ?> />
+				<?php echo esc_html__('Use post permalink in lists', 'linked-list'); ?>
+			</label>
+		</p>
 		<?php
 	}
 
@@ -395,13 +417,13 @@ final class Plugin {
 		if ((bool) get_post_meta($post->ID, self::META_SKIP_REDIRECT, true)) return;
 
 		$url = (string) get_post_meta($post->ID, self::META_URL, true);
-		if ($url === '') return; // ✅ No URL => DO NOT REDIRECT (prevents odd redirects to dashboard)
+		if ($url === '') return; // No URL => don't redirect
 
 		// Safety: only http/https; never redirect to admin URLs
 		$parts = wp_parse_url($url);
 		if (empty($parts['scheme']) || !in_array(strtolower($parts['scheme']), ['http', 'https'], true)) return;
 
-		// If URL happens to point back to the same permalink, avoid loops
+		// Avoid self-redirect loops
 		$perma = get_permalink($post);
 		if ($perma && 0 === strcasecmp(trailingslashit($perma), trailingslashit($url))) return;
 
@@ -409,7 +431,7 @@ final class Plugin {
 		exit;
 	}
 
-	// 3) On-site “↩︎ permalink” glyph injection (works with any theme)
+	// 3) On-site “↩︎ permalink” glyph injection (works with any theme) — links to INTERNAL permalink
 	public static function inject_site_glyph(string $content): string {
 		if (is_admin() || is_feed()) return $content;
 
@@ -418,7 +440,7 @@ final class Plugin {
 		if (!get_option(self::OPT_SITE_GLYPH_ENABLE)) return $content;
 
 		$glyph = (string) get_option(self::OPT_SITE_GLYPH_TEXT, '&#8617;');
-		$perma = get_permalink($post);
+		$perma = get_permalink($post); // INTERNAL permalink
 
 		$anchor = sprintf(
 			'<span class="linklog-permalink-glyph"> <a href="%s" rel="bookmark">%s</a></span>',
@@ -449,7 +471,7 @@ final class Plugin {
 		if (!get_option(self::OPT_FEED_GLYPH_ENABLE)) return $content;
 
 		$glyph = (string) get_option(self::OPT_FEED_GLYPH_TEXT, '&#9733;');
-		$perma = get_permalink($post);
+		$perma = get_permalink($post); // INTERNAL permalink for feed glyph too
 		$anchor = sprintf('<a href="%s" rel="bookmark" class="linklog-feed-glyph">%s</a>', esc_url($perma), $glyph);
 		return $content . "\n<p>{$anchor}</p>\n";
 	}
