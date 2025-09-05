@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:  Commentary
- * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, sets Aside post format, adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), optional single-view redirect, and an option to exclude Commentary posts from the main blog loop.
- * Version:      4.10.0
+ * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, applies your chosen Post Format (Aside or Standard), adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), optional single-view redirect, and an option to exclude Commentary posts from the main blog loop.
+ * Version:      4.11.0
  * Requires PHP: 8.0
  * Requires at least: 6.3
  * Tested up to: 6.7
@@ -49,7 +49,8 @@ const META_SKIP_REWRITE      = 'commentary_skip_rewrite';  // legacy toggle
 
 const OPT_GROUP              = 'commentary';
 const OPT_SINGLE_REDIRECT    = 'commentary_single_redirect';
-const OPT_EXCLUDE_MAIN       = 'commentary_exclude_main_loop'; // NEW: exclude Commentary from main loop
+const OPT_EXCLUDE_MAIN       = 'commentary_exclude_main_loop';
+const OPT_POST_FORMAT        = 'commentary_post_format'; // NEW: 'aside' | 'standard'
 
 /* ========================================================================== *
  * 0) ACTIVATION / DEACTIVATION / INIT
@@ -65,6 +66,9 @@ function on_activate(): void {
 	}
 	if (get_option(OPT_EXCLUDE_MAIN, null) === null) {
 		add_option(OPT_EXCLUDE_MAIN, 0);
+	}
+	if (get_option(OPT_POST_FORMAT, null) === null) {
+		add_option(OPT_POST_FORMAT, 'aside'); // default behavior preserved
 	}
 	register_virtual_archive_rewrite();
 	flush_rewrite_rules();
@@ -83,7 +87,7 @@ add_action('pre_get_posts', __NAMESPACE__ . '\\commentary_virtual_pre_get_posts'
 add_filter('get_the_archive_title', __NAMESPACE__ . '\\commentary_archive_title');
 add_filter('template_include', __NAMESPACE__ . '\\commentary_virtual_template', 50);
 
-// NEW: exclude commentary posts from the main blog loop (if option enabled)
+// Exclude commentary posts from main blog loop (if enabled)
 add_action('pre_get_posts', __NAMESPACE__ . '\\maybe_exclude_commentary_from_main', 20);
 
 // Meta and editor UI
@@ -93,10 +97,6 @@ add_action('init', __NAMESPACE__ . '\\register_post_meta_fields');
  * 1) TERMS: Create Linked + Commentary categories AND tags (activation only)
  * ========================================================================== */
 
-/**
- * Creates categories 'linked' and 'commentary' + tags 'linked' and 'commentary'
- * This runs ONLY when the plugin is activated.
- */
 function ensure_terms_on_activation(): void {
 	// Categories
 	if (!get_term_by('slug', CAT_LINKED_SLUG, 'category')) {
@@ -232,7 +232,7 @@ function commentary_virtual_template(string $template): string {
 }
 
 /* ========================================================================== *
- * 3b) NEW: Exclude Commentary posts from the main blog loop (home) if enabled
+ * 3b) Exclude Commentary posts from the main blog loop (home) if enabled
  * ========================================================================== */
 
 function maybe_exclude_commentary_from_main(WP_Query $q): void {
@@ -496,7 +496,7 @@ JS;
 }
 
 /* ========================================================================== *
- * 7) AUTO-CATEGORIZE, AUTO-TAG & ASIDE FORMAT on qualifying posts
+ * 7) AUTO-CATEGORIZE, AUTO-TAG & APPLY FORMAT on qualifying posts
  * ========================================================================== */
 
 add_action('save_post_post', __NAMESPACE__ . '\\ensure_commentary_terms_and_format', 20, 3);
@@ -547,14 +547,20 @@ function ensure_commentary_terms_and_format(int $post_id, WP_Post $post, bool $u
 		wp_set_post_terms($post_id, $final_tags, 'post_tag', false);
 	}
 
-	/* Set Post Format: Aside (if supported) */
+	/* Apply Post Format per setting (if supported by theme) */
 	if (post_type_supports('post', 'post-formats')) {
-		set_post_format($post_id, 'aside');
+		$choice = get_option(OPT_POST_FORMAT, 'aside');
+		if ($choice === 'standard') {
+			// Remove any assigned format to make it Standard
+			set_post_format($post_id, false);
+		} else {
+			set_post_format($post_id, 'aside');
+		}
 	}
 }
 
 /* ========================================================================== *
- * 8) DEDICATED ADMIN PANEL + SETTINGS (single redirect + exclude main loop)
+ * 8) DEDICATED ADMIN PANEL + SETTINGS
  * ========================================================================== */
 
 add_action('admin_menu', __NAMESPACE__ . '\\register_commentary_panel');
@@ -602,7 +608,6 @@ function handle_add_new_redirect_early(): void {
 	if (!is_admin() || !current_user_can('edit_posts')) return;
 	if (($_GET['page'] ?? '') !== 'commentary-add-new') return;
 
-	// Terms are created on activation; here we just use them if present.
 	$catLinked  = get_term_by('slug', CAT_LINKED_SLUG, 'category');
 	$catComm    = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
 
@@ -674,7 +679,6 @@ function render_commentary_panel(): void {
 				$trash = get_delete_post_link($ID, '', true);
 				$url   = (string) get_post_meta($ID, META_URL, true);
 
-				// Quick Edit: jump to core Posts list (where inline QE lives) filtered to Commentary, anchored to row
 				$qe_url = add_query_arg(
 					[
 						'post_type' => 'post',
@@ -722,7 +726,7 @@ function render_commentary_panel(): void {
 	<?php
 }
 
-/* Settings (single-view redirect + exclude main loop) */
+/* Settings (single-view redirect + exclude main loop + post format) */
 add_action('admin_init', __NAMESPACE__ . '\\register_settings');
 function register_settings(): void {
 	register_setting(OPT_GROUP, OPT_SINGLE_REDIRECT, [
@@ -735,10 +739,23 @@ function register_settings(): void {
 		'sanitize_callback' => fn($v): bool => (bool) $v,
 		'default'           => 0,
 	]);
+	register_setting(OPT_GROUP, OPT_POST_FORMAT, [
+		'type'              => 'string',
+		'sanitize_callback' => function($v): string {
+			$v = is_string($v) ? strtolower($v) : '';
+			return in_array($v, ['aside','standard'], true) ? $v : 'aside';
+		},
+		'default'           => 'aside',
+	]);
 
-	add_settings_section('commentary_main', __('Commentary Settings', 'commentary'), function() {
-		echo '<p>' . esc_html__('Global settings for Commentary behavior.', 'commentary') . '</p>';
-	}, 'commentary_settings');
+	add_settings_section(
+		'commentary_main',
+		__('Commentary Settings', 'commentary'),
+		function() {
+			echo '<p>' . esc_html__('Global settings for Commentary behavior.', 'commentary') . '</p>';
+		},
+		'commentary_settings'
+	);
 
 	add_settings_field(
 		OPT_SINGLE_REDIRECT,
@@ -759,6 +776,30 @@ function register_settings(): void {
 			$val = (bool) get_option(OPT_EXCLUDE_MAIN, 0);
 			echo '<label><input type="checkbox" name="' . esc_attr(OPT_EXCLUDE_MAIN) . '" value="1" ' . checked(true, $val, false) . ' />';
 			echo ' ' . esc_html__('Hide posts in the “Commentary” category from the home/posts page loop.', 'commentary') . '</label>';
+		},
+		'commentary_settings',
+		'commentary_main'
+	);
+
+	// NEW: Post format selector
+	add_settings_field(
+		OPT_POST_FORMAT,
+		__('Post Format for Commentary', 'commentary'),
+		function() {
+			$val = (string) get_option(OPT_POST_FORMAT, 'aside');
+			?>
+			<select name="<?php echo esc_attr(OPT_POST_FORMAT); ?>">
+				<option value="aside" <?php selected($val, 'aside'); ?>>
+					<?php esc_html_e('Aside (recommended for short commentary)', 'commentary'); ?>
+				</option>
+				<option value="standard" <?php selected($val, 'standard'); ?>>
+					<?php esc_html_e('Standard (no special format)', 'commentary'); ?>
+				</option>
+			</select>
+			<p class="description">
+				<?php esc_html_e('Applied automatically to qualifying Commentary posts on save (if your theme supports Post Formats).', 'commentary'); ?>
+			</p>
+			<?php
 		},
 		'commentary_settings',
 		'commentary_main'
