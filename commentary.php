@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:  Commentary
- * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories, auto-categorizes qualifying posts (and removes “Uncategorized”), sets Aside post format, adds a Commentary admin panel, a true theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), and an optional single-view redirect.
- * Version:      4.8.0
+ * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, sets Aside post format, adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), and an optional single-view redirect.
+ * Version:      4.9.0
  * Requires PHP: 8.0
  * Requires at least: 6.3
  * Tested up to: 6.7
@@ -40,6 +40,8 @@ if (!defined('ABSPATH')) { exit; }
 const GLYPH_DEFAULT          = "∞\u{FE0E}";
 const CAT_LINKED_SLUG        = 'linked';
 const CAT_COMMENTARY_SLUG    = 'commentary';
+const TAG_LINKED_SLUG        = 'linked';
+const TAG_COMMENTARY_SLUG    = 'commentary';
 
 const META_URL               = 'commentary_url';
 const META_SKIP_REDIRECT     = 'commentary_skip_redirect';
@@ -56,7 +58,7 @@ register_activation_hook(__FILE__, __NAMESPACE__ . '\\on_activate');
 register_deactivation_hook(__FILE__, __NAMESPACE__ . '\\on_deactivate');
 
 function on_activate(): void {
-	ensure_categories();
+	ensure_terms_on_activation(); // Create categories + tags once on activation
 	if (get_option(OPT_SINGLE_REDIRECT, null) === null) {
 		add_option(OPT_SINGLE_REDIRECT, 0);
 	}
@@ -68,9 +70,7 @@ function on_deactivate(): void {
 	flush_rewrite_rules();
 }
 
-add_action('after_switch_theme', __NAMESPACE__ . '\\ensure_categories');
-
-// Rewrite + query var for /commentary/ and /commentary/page/2/
+// Rewrite + query var for /commentary/ and pagination
 add_action('init', __NAMESPACE__ . '\\register_virtual_archive_rewrite');
 add_filter('query_vars', __NAMESPACE__ . '\\register_virtual_archive_qv');
 
@@ -83,18 +83,32 @@ add_filter('template_include', __NAMESPACE__ . '\\commentary_virtual_template', 
 add_action('init', __NAMESPACE__ . '\\register_post_meta_fields');
 
 /* ========================================================================== *
- * 1) CATEGORIES: Ensure Linked + Commentary exist
+ * 1) TERMS: Create Linked + Commentary categories AND tags (activation only)
  * ========================================================================== */
 
-function ensure_categories(): void {
+/**
+ * Creates categories 'linked' and 'commentary' + tags 'linked' and 'commentary'
+ * This runs ONLY when the plugin is activated.
+ */
+function ensure_terms_on_activation(): void {
+	// Categories
 	if (!get_term_by('slug', CAT_LINKED_SLUG, 'category')) {
 		wp_insert_term('Linked', 'category', ['slug' => CAT_LINKED_SLUG]);
 	}
 	if (!get_term_by('slug', CAT_COMMENTARY_SLUG, 'category')) {
 		wp_insert_term('Commentary', 'category', ['slug' => CAT_COMMENTARY_SLUG]);
 	}
+
+	// Tags
+	if (!get_term_by('slug', TAG_LINKED_SLUG, 'post_tag')) {
+		wp_insert_term('Linked', 'post_tag', ['slug' => TAG_LINKED_SLUG]);
+	}
+	if (!get_term_by('slug', TAG_COMMENTARY_SLUG, 'post_tag')) {
+		wp_insert_term('Commentary', 'post_tag', ['slug' => TAG_COMMENTARY_SLUG]);
+	}
 }
 
+/** Is a given post (or current global) a commentary post? */
 function is_commentary_post(null|int|WP_Post $post = null): bool {
 	$p = $post ? get_post($post) : get_post();
 	if (!$p instanceof WP_Post || $p->post_type !== 'post') return false;
@@ -253,10 +267,10 @@ function enqueue_block_editor_assets(): void {
 		const { PluginDocumentSettingPanel } = wp.editPost || {};
 		if ( ! registerPlugin || ! PluginDocumentSettingPanel ) return;
 
-		const { TextControl, ToggleControl, Tooltip, PanelRow, __experimentalInputControl } = wp.components;
+		const { TextControl, ToggleControl, Tooltip } = wp.components;
 		const { __ } = wp.i18n;
 		const { useSelect, useDispatch } = wp.data;
-		const { createElement: el, Fragment } = wp.element;
+		const { createElement: el } = wp.element;
 
 		const Panel = () => {
 			const postType = useSelect( s => s("core/editor").getCurrentPostType(), [] );
@@ -298,7 +312,7 @@ function enqueue_block_editor_assets(): void {
 				),
 
 				el( "p", { style: { marginTop: "8px", color: "var(--wp-admin-theme-color-darker-10, #50575e)" } },
-					__("Tip: Adding a Link URL will auto-categorize this post as Commentary + Linked and remove Uncategorized on save.", "commentary")
+					__("Tip: Adding a Link URL will auto-categorize & tag this post as Commentary + Linked and remove Uncategorized on save.", "commentary")
 				)
 			);
 		};
@@ -345,7 +359,7 @@ function render_classic_metabox(WP_Post $post): void {
 			<?php echo esc_html__('Use post permalink in lists', 'commentary'); ?>
 		</label>
 	</p>
-	<p class="description"><?php echo esc_html__('Adding a Link URL will auto-categorize this post as Commentary + Linked and remove Uncategorized on save.', 'commentary'); ?></p>
+	<p class="description"><?php echo esc_html__('Tip: Adding a Link URL will auto-categorize & tag this post as Commentary + Linked and remove Uncategorized on save.', 'commentary'); ?></p>
 	<?php
 }
 
@@ -456,44 +470,59 @@ JS;
 }
 
 /* ========================================================================== *
- * 7) AUTO-CATEGORIZE & ASIDE FORMAT on qualifying posts
+ * 7) AUTO-CATEGORIZE, AUTO-TAG & ASIDE FORMAT on qualifying posts
  * ========================================================================== */
 
-add_action('save_post_post', __NAMESPACE__ . '\\ensure_commentary_categories_and_format', 20, 3);
-function ensure_commentary_categories_and_format(int $post_id, WP_Post $post, bool $update): void {
+add_action('save_post_post', __NAMESPACE__ . '\\ensure_commentary_terms_and_format', 20, 3);
+function ensure_commentary_terms_and_format(int $post_id, WP_Post $post, bool $update): void {
 	if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
 	if (!current_user_can('edit_post', $post_id)) return;
 
-	ensure_categories();
-
+	// Determine if this is a commentary post
 	$url            = trim((string) get_post_meta($post_id, META_URL, true));
-	$has_linked     = has_term(CAT_LINKED_SLUG, 'category', $post);
-	$has_commentary = has_term(CAT_COMMENTARY_SLUG, 'category', $post);
+	$has_linked_cat = has_term(CAT_LINKED_SLUG, 'category', $post);
+	$has_comm_cat   = has_term(CAT_COMMENTARY_SLUG, 'category', $post);
 
-	// Qualify if URL present OR either category already present
-	if ($url === '' && !$has_linked && !$has_commentary) {
-		return;
+	if ($url === '' && !$has_linked_cat && !$has_comm_cat) {
+		return; // not commentary; do nothing
 	}
 
-	$current = wp_get_post_terms($post_id, 'category', ['fields' => 'ids']);
-	if (!is_array($current)) $current = [];
+	/* Categories: remove "Uncategorized" and ensure Linked + Commentary are present (if they exist) */
+	$current_cats = wp_get_post_terms($post_id, 'category', ['fields' => 'ids']);
+	if (!is_array($current_cats)) $current_cats = [];
 
-	// Remove default "Uncategorized"
 	$default_cat_id = (int) get_option('default_category');
-	$current = array_map('intval', $current);
-	$current = array_filter($current, fn($id) => $id !== $default_cat_id);
+	$current_cats   = array_map('intval', $current_cats);
+	$current_cats   = array_filter($current_cats, fn($id) => $id !== $default_cat_id);
 
-	$term_linked     = get_term_by('slug', CAT_LINKED_SLUG, 'category');
-	$term_commentary = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
-	$add_ids = [];
-	if ($term_linked)     { $add_ids[] = (int) $term_linked->term_id; }
-	if ($term_commentary) { $add_ids[] = (int) $term_commentary->term_id; }
+	$cat_linked     = get_term_by('slug', CAT_LINKED_SLUG, 'category');
+	$cat_commentary = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
+	$add_cat_ids    = [];
+	if ($cat_linked)     { $add_cat_ids[] = (int) $cat_linked->term_id; }
+	if ($cat_commentary) { $add_cat_ids[] = (int) $cat_commentary->term_id; }
 
-	$cats = array_values(array_unique(array_merge($current, $add_ids)));
-	if ($cats) {
-		wp_set_post_categories($post_id, $cats, false);
+	$final_cats = array_values(array_unique(array_merge($current_cats, $add_cat_ids)));
+	if ($final_cats) {
+		wp_set_post_categories($post_id, $final_cats, false);
 	}
 
+	/* Tags: automatically assign "Commentary" and "Linked" (create only on activation; here we just attach if found) */
+	$current_tags = wp_get_post_terms($post_id, 'post_tag', ['fields' => 'ids']);
+	if (!is_array($current_tags)) $current_tags = [];
+
+	$tag_linked     = get_term_by('slug', TAG_LINKED_SLUG, 'post_tag');
+	$tag_commentary = get_term_by('slug', TAG_COMMENTARY_SLUG, 'post_tag');
+	$add_tag_ids    = [];
+	if ($tag_linked)     { $add_tag_ids[] = (int) $tag_linked->term_id; }
+	if ($tag_commentary) { $add_tag_ids[] = (int) $tag_commentary->term_id; }
+
+	$final_tags = array_values(array_unique(array_merge($current_tags, $add_tag_ids)));
+	// Only set if we have something; do not wipe tags if none exist
+	if ($final_tags) {
+		wp_set_post_terms($post_id, $final_tags, 'post_tag', false);
+	}
+
+	/* Set Post Format: Aside (if supported) */
 	if (post_type_supports('post', 'post-formats')) {
 		set_post_format($post_id, 'aside');
 	}
@@ -548,7 +577,7 @@ function handle_add_new_redirect_early(): void {
 	if (!is_admin() || !current_user_can('edit_posts')) return;
 	if (($_GET['page'] ?? '') !== 'commentary-add-new') return;
 
-	ensure_categories();
+	// We no longer create categories here; they are created only on activation.
 	$catLinked  = get_term_by('slug', CAT_LINKED_SLUG, 'category');
 	$catComm    = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
 
@@ -620,7 +649,7 @@ function render_commentary_panel(): void {
 				$trash = get_delete_post_link($ID, '', true);
 				$url   = (string) get_post_meta($ID, META_URL, true);
 
-				// Quick Edit: jump to core Posts list and anchor to the row (where Quick Edit is available)
+				// Quick Edit: jump to core Posts list (where inline QE lives) filtered to Commentary, anchored to row
 				$qe_url = add_query_arg(
 					[
 						'post_type' => 'post',
