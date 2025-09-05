@@ -1,0 +1,42 @@
+# Node / build artifacts
+node_modules/
+dist/
+build/
+.cache/
+npm-debug.log*
+yarn-error.log*
+
+# Composer / PHP
+vendor/
+composer.phar
+.phpunit.result.cache
+
+# IDEs & OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Env & local configs
+.env
+.env.*
+.env.local
+
+# WordPress runtime (local environment)
+wp-content/uploads/
+uploads/
+wp-config.php
+
+# Logs and temporary files
+*.log
+*.tmp
+*.cache
+*.bak
+
+# Generated maps / sourcemaps
+*.map
+
+# macOS metadata
+.AppleDouble
+.LSOverride
