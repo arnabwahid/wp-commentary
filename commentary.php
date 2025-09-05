@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:  Commentary
- * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, applies your chosen Post Format (Aside or Standard), adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), optional single-view redirect, and an option to exclude Commentary posts from the main blog loop.
- * Version:      4.11.0
+ * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, applies your chosen Post Format (Link or Standard), adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), optional single-view redirect, an option to exclude Commentary posts from the main blog loop, and defaults new Commentary posts to Link format.
+ * Version:      4.12.0
  * Requires PHP: 8.0
  * Requires at least: 6.3
  * Tested up to: 6.7
@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) { exit; }
 /**
  * A post is “Commentary” if:
  *  - Category 'commentary' OR Category 'linked' exists on it, OR
- *  - it has a non-empty external Link URL (meta: commentary_url).
+ *  - it has a non-empty External Link URL (meta: commentary_url).
  *
  * Listings (home/archive/search,/commentary/):
  *   - Title → internal permalink
@@ -45,12 +45,15 @@ const TAG_COMMENTARY_SLUG    = 'commentary';
 
 const META_URL               = 'commentary_url';
 const META_SKIP_REDIRECT     = 'commentary_skip_redirect';
-const META_SKIP_REWRITE      = 'commentary_skip_rewrite';  // legacy toggle
+const META_SKIP_REWRITE      = 'commentary_skip_rewrite'; // legacy toggle kept for compatibility
 
 const OPT_GROUP              = 'commentary';
 const OPT_SINGLE_REDIRECT    = 'commentary_single_redirect';
 const OPT_EXCLUDE_MAIN       = 'commentary_exclude_main_loop';
-const OPT_POST_FORMAT        = 'commentary_post_format'; // NEW: 'aside' | 'standard'
+const OPT_POST_FORMAT        = 'commentary_post_format'; // 'link' | 'standard'
+
+/* Internal flag used when opening Add New from our panel (to default Link format). */
+const QV_FORCE_LINK_FORMAT   = 'commentary_default_format';
 
 /* ========================================================================== *
  * 0) ACTIVATION / DEACTIVATION / INIT
@@ -61,15 +64,9 @@ register_deactivation_hook(__FILE__, __NAMESPACE__ . '\\on_deactivate');
 
 function on_activate(): void {
 	ensure_terms_on_activation(); // Create categories + tags once on activation
-	if (get_option(OPT_SINGLE_REDIRECT, null) === null) {
-		add_option(OPT_SINGLE_REDIRECT, 0);
-	}
-	if (get_option(OPT_EXCLUDE_MAIN, null) === null) {
-		add_option(OPT_EXCLUDE_MAIN, 0);
-	}
-	if (get_option(OPT_POST_FORMAT, null) === null) {
-		add_option(OPT_POST_FORMAT, 'aside'); // default behavior preserved
-	}
+	add_option(OPT_SINGLE_REDIRECT, 0);
+	add_option(OPT_EXCLUDE_MAIN, 0);
+	add_option(OPT_POST_FORMAT, 'link'); // default now: LINK format
 	register_virtual_archive_rewrite();
 	flush_rewrite_rules();
 }
@@ -90,7 +87,7 @@ add_filter('template_include', __NAMESPACE__ . '\\commentary_virtual_template', 
 // Exclude commentary posts from main blog loop (if enabled)
 add_action('pre_get_posts', __NAMESPACE__ . '\\maybe_exclude_commentary_from_main', 20);
 
-// Meta and editor UI
+// Post meta registration (REST-aware)
 add_action('init', __NAMESPACE__ . '\\register_post_meta_fields');
 
 /* ========================================================================== *
@@ -335,10 +332,6 @@ function enqueue_block_editor_assets(): void {
 							onChange: (v) => setMeta("' . META_SKIP_REWRITE . '", !!v)
 						})
 					)
-				),
-
-				el( "p", { style: { marginTop: "8px", color: "var(--wp-admin-theme-color-darker-10, #50575e)" } },
-					__("Tip: Adding a Link URL will auto-categorize & tag this post as Commentary + Linked and remove Uncategorized on save.", "commentary")
 				)
 			);
 		};
@@ -496,7 +489,7 @@ JS;
 }
 
 /* ========================================================================== *
- * 7) AUTO-CATEGORIZE, AUTO-TAG & APPLY FORMAT on qualifying posts
+ * 7) AUTO-CATEGORIZE, AUTO-TAG & APPLY POST FORMAT on qualifying posts
  * ========================================================================== */
 
 add_action('save_post_post', __NAMESPACE__ . '\\ensure_commentary_terms_and_format', 20, 3);
@@ -549,12 +542,12 @@ function ensure_commentary_terms_and_format(int $post_id, WP_Post $post, bool $u
 
 	/* Apply Post Format per setting (if supported by theme) */
 	if (post_type_supports('post', 'post-formats')) {
-		$choice = get_option(OPT_POST_FORMAT, 'aside');
+		$choice = get_option(OPT_POST_FORMAT, 'link'); // 'link' or 'standard'
 		if ($choice === 'standard') {
 			// Remove any assigned format to make it Standard
 			set_post_format($post_id, false);
 		} else {
-			set_post_format($post_id, 'aside');
+			set_post_format($post_id, 'link');
 		}
 	}
 }
@@ -612,12 +605,28 @@ function handle_add_new_redirect_early(): void {
 	$catComm    = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
 
 	$url = admin_url('post-new.php?post_type=post');
+
+	// Pre-select categories (if they exist)
 	if ($catLinked) { $url = add_query_arg(['tax_input[category][]' => (int) $catLinked->term_id], $url); }
 	if ($catComm)   { $url = add_query_arg(['tax_input[category][]' => (int) $catComm->term_id], $url); }
+
+	// Signal the editor to use Link format by default for this new Commentary post
+	$url = add_query_arg(QV_FORCE_LINK_FORMAT, '1', $url);
 
 	wp_safe_redirect($url);
 	exit;
 }
+
+/**
+ * Force the default post format to "link" when opening Add New from our panel.
+ * This does not change the global default; it only affects that creation flow.
+ */
+add_filter('default_post_format', function(string $format): string {
+	if (is_admin() && isset($_GET[QV_FORCE_LINK_FORMAT]) && $_GET[QV_FORCE_LINK_FORMAT] === '1') {
+		return 'link';
+	}
+	return $format;
+});
 
 function add_new_placeholder(): void {
 	echo '<div class="wrap"><h1>' . esc_html__('Redirecting…', 'commentary') . '</h1></div>';
@@ -726,7 +735,7 @@ function render_commentary_panel(): void {
 	<?php
 }
 
-/* Settings (single-view redirect + exclude main loop + post format) */
+/* Settings (single-view redirect + exclude main loop + POST FORMAT selection) */
 add_action('admin_init', __NAMESPACE__ . '\\register_settings');
 function register_settings(): void {
 	register_setting(OPT_GROUP, OPT_SINGLE_REDIRECT, [
@@ -743,9 +752,9 @@ function register_settings(): void {
 		'type'              => 'string',
 		'sanitize_callback' => function($v): string {
 			$v = is_string($v) ? strtolower($v) : '';
-			return in_array($v, ['aside','standard'], true) ? $v : 'aside';
+			return in_array($v, ['link','standard'], true) ? $v : 'link';
 		},
-		'default'           => 'aside',
+		'default'           => 'link',
 	]);
 
 	add_settings_section(
@@ -781,16 +790,16 @@ function register_settings(): void {
 		'commentary_main'
 	);
 
-	// NEW: Post format selector
+	// NEW: Post format selector (Standard vs Link)
 	add_settings_field(
 		OPT_POST_FORMAT,
 		__('Post Format for Commentary', 'commentary'),
 		function() {
-			$val = (string) get_option(OPT_POST_FORMAT, 'aside');
+			$val = (string) get_option(OPT_POST_FORMAT, 'link');
 			?>
 			<select name="<?php echo esc_attr(OPT_POST_FORMAT); ?>">
-				<option value="aside" <?php selected($val, 'aside'); ?>>
-					<?php esc_html_e('Aside (recommended for short commentary)', 'commentary'); ?>
+				<option value="link" <?php selected($val, 'link'); ?>>
+					<?php esc_html_e('Link (recommended for link posts)', 'commentary'); ?>
 				</option>
 				<option value="standard" <?php selected($val, 'standard'); ?>>
 					<?php esc_html_e('Standard (no special format)', 'commentary'); ?>
