@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Linked List
  * Description:       Theme-agnostic link blogging for WordPress. Adds a “Linked List” post type (“Linked Posts”) with Link URL, per-post overrides, on-site ↩︎ permalink glyph, DF-style feed behavior, optional UTM auto-append, a shortcode archive page, and an option to exclude linked items from the main blog loop.
- * Version:           1.4.0
+ * Version:           1.4.1
  * Requires at least: 6.3
  * Tested up to:      6.7
  * Requires PHP:      8.1
@@ -16,12 +16,14 @@ namespace LinkedList;
 
 use WP_Post;
 use WP_Query;
+use WP_REST_Request;
+use WP_REST_Response;
 
 if (!defined('ABSPATH')) exit;
 
 final class Plugin {
 	/** Version */
-	public const VERSION = '1.4.0';
+	public const VERSION = '1.4.1';
 
 	/* -------------------------------------------------------------------------
 	 * Meta keys (registered with REST for Gutenberg)
@@ -47,7 +49,7 @@ final class Plugin {
 	private const OPT_UTM_TERM           = 'linklog_utm_term';
 	private const OPT_UTM_CONTENT        = 'linklog_utm_content';
 
-	// NEW: exclude linked items from the main blog loop (home)
+	// Exclude linked items from the main blog loop (home)
 	private const OPT_EXCLUDE_FROM_MAIN  = 'linked_list_exclude_from_main'; // bool
 
 	/* -------------------------------------------------------------------------
@@ -87,10 +89,13 @@ final class Plugin {
 
 		// Shortcode archive + auto-create page /linked-list/
 		add_shortcode('linked_list_archive', [self::class, 'shortcode_archive']);
+
+		// Ensure Gutenberg (REST) returns INTERNAL permalink for editor UX
+		add_filter('rest_prepare_linked_list', [self::class, 'rest_force_internal_link'], 10, 3);
 	}
 
 	/* -------------------------------------------------------------------------
-	 * Activation: defaults, ensure CPT, ensure terms, ensure archive page, flush rewrites
+	 * Activation: defaults, ensure CPT, ensure terms, ensure archive page, flush
 	 * ---------------------------------------------------------------------- */
 	public static function activate(): void {
 		// Defaults
@@ -428,7 +433,12 @@ final class Plugin {
 
 	// Rewrite titles/permalinks to external URL across the site (lists/widgets) when enabled
 	public static function filter_post_type_link(string $permalink, WP_Post $post): string {
-		if (is_admin() || $post->post_type !== 'linked_list') return $permalink;
+		if ($post->post_type !== 'linked_list') return $permalink;
+
+		// Never rewrite inside REST (editor) or admin — ensures Gutenberg "View" uses internal URL
+		if ((defined('REST_REQUEST') && REST_REQUEST) || is_admin()) {
+			return $permalink;
+		}
 
 		if (!get_option(self::OPT_REWRITE_PERMALINKS)) return $permalink;
 		if ((bool) get_post_meta($post->ID, self::META_SKIP_REWRITE, true)) return $permalink;
@@ -656,11 +666,9 @@ final class Plugin {
 			],
 		];
 
-		// Make sure CPT items always included even if no taxonomy/meta on them
-		// by duplicating the OR logic via 'suppress_filters' + filter on 'posts_where'
+		// Broaden: always include CPT items even if no taxonomy/meta (defensive)
 		add_filter('posts_where', $whereFilter = static function(string $where, WP_Query $q) {
 			global $wpdb;
-			// If this query is ours, broaden: include CPT regardless of tax/meta constraints.
 			$post_types = (array) $q->get('post_type');
 			if ($post_types && in_array('linked_list', $post_types, true)) {
 				$where .= $wpdb->prepare(" OR {$wpdb->posts}.post_type = %s ", 'linked_list');
@@ -669,8 +677,6 @@ final class Plugin {
 		}, 10, 2);
 
 		$q = new WP_Query($args);
-
-		// Remove filter immediately after use
 		remove_filter('posts_where', $whereFilter, 10);
 
 		ob_start();
@@ -717,6 +723,27 @@ final class Plugin {
 		if (!is_wp_error($page_id)) {
 			update_option('linked_list_archive_page_id', (int) $page_id);
 		}
+	}
+
+	/* -------------------------------------------------------------------------
+	 * REST: force internal permalink for editor (fixes "View Linked Post" button)
+	 * ---------------------------------------------------------------------- */
+	/**
+	 * Ensure the REST response for linked_list returns the INTERNAL permalink when
+	 * the editor (context=edit) requests it. This keeps the post-publish notice and
+	 * “View Linked Post” button pointing to the post permalink for editorial review.
+	 */
+	public static function rest_force_internal_link(WP_REST_Response $response, WP_Post $post, WP_REST_Request $request): WP_REST_Response {
+		// Only adjust for the editor/authorized contexts
+		$ctx = $request->get_param('context');
+		if ($ctx === 'edit' || is_admin()) {
+			$response->data['link'] = get_permalink($post);
+			// Also try to set a canonical link in _links if present
+			if (isset($response->links) && is_array($response->links)) {
+				$response->links['permalink'][0]['href'] = get_permalink($post);
+			}
+		}
+		return $response;
 	}
 }
 
