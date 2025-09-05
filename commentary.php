@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:  Commentary
- * Description:  Commentary-style link blogging without a CPT: ensures terms, auto-tags qualifying posts, adds a Commentary admin panel, a [commentary_archive] shortcode, a virtual archive at /commentary/, a Gutenberg sidebar (with classic metabox fallback), title glyphs on listings (∞ → internal permalink), and optional single-view redirects to the external URL.
- * Version:      4.4.0
+ * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories, auto-categorizes qualifying posts (and removes “Uncategorized”), sets Aside post format, adds a Commentary admin panel, a true theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), and an optional single-view redirect.
+ * Version:      4.7.0
  * Requires PHP: 8.0
  * Requires at least: 6.3
  * Tested up to: 6.7
@@ -22,23 +22,23 @@ if (!defined('ABSPATH')) { exit; }
 /**
  * WHAT COUNTS AS A "COMMENTARY POST"?
  * -----------------------------------
- * A post is considered “Commentary” if it has:
- *  - Tag 'commentary' OR Tag 'linklog'
- *  - (Also accepts legacy Category 'linked' for convenience/migration.)
+ * A post is “Commentary” if it:
+ *  - has Category 'commentary' OR Category 'linked', OR
+ *  - has a non-empty external Link URL (meta: commentary_url).
  *
  * This plugin:
- *  - Ensures Category 'linked' + Tags 'commentary' and 'linklog' exist.
- *  - Auto-assigns Tags 'commentary' and 'linklog' to posts that either:
- *      a) have Category 'linked', OR
- *      b) have a non-empty Commentary URL (meta: commentary_url).
+ *  - Ensures Categories 'Linked' (slug: linked) and 'Commentary' (slug: commentary) exist.
+ *  - On save of a qualifying post: removes 'Uncategorized', adds both 'Linked' and 'Commentary',
+ *    and sets Post Format = Aside.
  *
- * LISTING BEHAVIOR
- * ----------------
- * - On listing contexts (home/archive/search, not single), the POST TITLE links to the EXTERNAL URL
- *   unless per-post “Use post permalink in lists” is checked.
- * - A plaintext glyph “∞” appears to the RIGHT of the title and links to the INTERNAL permalink.
- * - On single views, no glyph is shown; optional redirect to the external URL can be enabled in
- *   Commentary → Settings (respects per-post “Don’t auto-redirect” and `?stay=1`).
+ * LINKING RULES
+ * -------------
+ * LISTINGS (home/archive/search,/commentary/):
+ *   - Post Title → INTERNAL permalink (never rewritten).
+ *   - Glyph “∞” (right of title) → EXTERNAL URL (plaintext, 50% opacity; 100% on hover).
+ * SINGLE POST:
+ *   - Title remains unlinked (theme default).
+ *   - Glyph “∞” (right of title) → EXTERNAL URL (same styling).
  */
 
 /* ========================================================================== *
@@ -46,13 +46,12 @@ if (!defined('ABSPATH')) { exit; }
  * ========================================================================== */
 
 const GLYPH_DEFAULT          = "∞\u{FE0E}"; // plaintext infinity + U+FE0E (text presentation)
-const TAG_COMMENTARY_SLUG    = 'commentary';
-const TAG_LINKLOG_SLUG       = 'linklog';
 const CAT_LINKED_SLUG        = 'linked';
+const CAT_COMMENTARY_SLUG    = 'commentary';
 
 const META_URL               = 'commentary_url';
-const META_SKIP_REDIRECT     = 'commentary_skip_redirect'; // per-post: don't redirect single
-const META_SKIP_REWRITE      = 'commentary_skip_rewrite';  // per-post: use permalink in lists
+const META_SKIP_REDIRECT     = 'commentary_skip_redirect'; // per-post: don't redirect single (if global on)
+const META_SKIP_REWRITE      = 'commentary_skip_rewrite';  // legacy toggle (kept; not used for title now)
 
 const OPT_GROUP              = 'commentary';
 const OPT_SINGLE_REDIRECT    = 'commentary_single_redirect'; // bool global
@@ -65,7 +64,7 @@ register_activation_hook(__FILE__, __NAMESPACE__ . '\\on_activate');
 register_deactivation_hook(__FILE__, __NAMESPACE__ . '\\on_deactivate');
 
 function on_activate(): void {
-	ensure_terms();
+	ensure_categories();
 	// default settings
 	if (get_option(OPT_SINGLE_REDIRECT, null) === null) {
 		add_option(OPT_SINGLE_REDIRECT, 0);
@@ -78,28 +77,32 @@ function on_deactivate(): void {
 	flush_rewrite_rules();
 }
 
-add_action('after_switch_theme', __NAMESPACE__ . '\\ensure_terms');
+add_action('after_switch_theme', __NAMESPACE__ . '\\ensure_categories');
 
-// Init hooks
+// Rewrite rules + query var for /commentary/ and /commentary/page/2/
 add_action('init', __NAMESPACE__ . '\\register_virtual_archive_rewrite');
 add_filter('query_vars', __NAMESPACE__ . '\\register_virtual_archive_qv');
-add_action('template_redirect', __NAMESPACE__ . '\\maybe_render_virtual');
+
+// Power the virtual archive with the MAIN QUERY + THEME ARCHIVE TEMPLATE
+add_action('pre_get_posts', __NAMESPACE__ . '\\commentary_virtual_pre_get_posts');
+add_filter('get_the_archive_title', __NAMESPACE__ . '\\commentary_archive_title');
+add_filter('template_include', __NAMESPACE__ . '\\commentary_virtual_template', 50);
+
+// Meta registration + editor UI
 add_action('init', __NAMESPACE__ . '\\register_post_meta_fields');
 
 /* ========================================================================== *
- * 1) TERMS: Ensure Category/Tags
+ * 1) CATEGORIES: Ensure Linked + Commentary exist
  * ========================================================================== */
 
-function ensure_terms(): void {
-	// Category: linked
+function ensure_categories(): void {
+	// Linked
 	if (!get_term_by('slug', CAT_LINKED_SLUG, 'category')) {
 		wp_insert_term('Linked', 'category', ['slug' => CAT_LINKED_SLUG]);
 	}
-	// Tags: commentary, linklog
-	foreach ([TAG_COMMENTARY_SLUG => 'Commentary', TAG_LINKLOG_SLUG => 'Linklog'] as $slug => $name) {
-		if (!get_term_by('slug', $slug, 'post_tag')) {
-			wp_insert_term($name, 'post_tag', ['slug' => $slug]);
-		}
+	// Commentary
+	if (!get_term_by('slug', CAT_COMMENTARY_SLUG, 'category')) {
+		wp_insert_term('Commentary', 'category', ['slug' => CAT_COMMENTARY_SLUG]);
 	}
 }
 
@@ -107,25 +110,25 @@ function ensure_terms(): void {
 function is_commentary_post(null|int|WP_Post $post = null): bool {
 	$p = $post ? get_post($post) : get_post();
 	if (!$p instanceof WP_Post || $p->post_type !== 'post') return false;
-	return has_term(TAG_COMMENTARY_SLUG, 'post_tag', $p)
-		|| has_term(TAG_LINKLOG_SLUG, 'post_tag', $p)
-		|| has_term(CAT_LINKED_SLUG, 'category', $p);
+	if (has_term(CAT_COMMENTARY_SLUG, 'category', $p) || has_term(CAT_LINKED_SLUG, 'category', $p)) return true;
+	$url = trim((string) get_post_meta($p->ID, META_URL, true));
+	return $url !== '';
 }
 
 /* ========================================================================== *
- * 2) ADMIN POSTS LIST: “Linked” view (legacy convenience)
+ * 2) ADMIN POSTS LIST: “Commentary” view (filters by the two categories)
  * ========================================================================== */
 
 add_filter('views_edit-post', function(array $views): array {
 	$base_url = add_query_arg(['post_type' => 'post'], admin_url('edit.php'));
 	$url      = add_query_arg('linked', '1', $base_url);
-	$count    = linked_admin_count();
+	$count    = commentary_admin_count();
 
 	$views['linked'] = sprintf(
 		'<a href="%s"%s>%s <span class="count">(%d)</span></a>',
 		esc_url($url),
 		(isset($_GET['linked']) && $_GET['linked'] === '1') ? ' class="current"' : '',
-		esc_html__('Linked', 'commentary'),
+		esc_html__('Commentary', 'commentary'),
 		(int) $count
 	);
 
@@ -137,40 +140,23 @@ add_action('pre_get_posts', function(WP_Query $q) {
 	if (!isset($_GET['linked']) || $_GET['linked'] !== '1') return;
 
 	$q->set('post_type', 'post');
-	$q->set('tax_query', [
-		'relation' => 'OR',
-		[
-			'taxonomy' => 'post_tag',
-			'field'    => 'slug',
-			'terms'    => [TAG_COMMENTARY_SLUG, TAG_LINKLOG_SLUG],
-		],
-		[
-			'taxonomy' => 'category',
-			'field'    => 'slug',
-			'terms'    => [CAT_LINKED_SLUG],
-		],
-	]);
+	$q->set('tax_query', [[
+		'taxonomy' => 'category',
+		'field'    => 'slug',
+		'terms'    => [CAT_COMMENTARY_SLUG, CAT_LINKED_SLUG],
+		'operator' => 'IN',
+	]]);
 });
 
-function linked_admin_count(): int {
+function commentary_admin_count(): int {
 	global $wpdb;
 
-	$tag_commentary = get_term_by('slug', TAG_COMMENTARY_SLUG, 'post_tag');
-	$tag_linklog    = get_term_by('slug', TAG_LINKLOG_SLUG, 'post_tag');
-	$cat_linked     = get_term_by('slug', CAT_LINKED_SLUG, 'category');
+	$cat_comm = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
+	$cat_link = get_term_by('slug', CAT_LINKED_SLUG, 'category');
 
 	$clauses = [];
-
-	if ($tag_commentary) {
-		$clauses[] = $wpdb->prepare("(tt.taxonomy='post_tag' AND tt.term_id=%d)", $tag_commentary->term_id);
-	}
-	if ($tag_linklog) {
-		$clauses[] = $wpdb->prepare("(tt.taxonomy='post_tag' AND tt.term_id=%d)", $tag_linklog->term_id);
-	}
-	if ($cat_linked) {
-		$clauses[] = $wpdb->prepare("(tt.taxonomy='category' AND tt.term_id=%d)", $cat_linked->term_id);
-	}
-
+	if ($cat_comm) { $clauses[] = $wpdb->prepare("(tt.taxonomy='category' AND tt.term_id=%d)", $cat_comm->term_id); }
+	if ($cat_link) { $clauses[] = $wpdb->prepare("(tt.taxonomy='category' AND tt.term_id=%d)", $cat_link->term_id); }
 	if (!$clauses) return 0;
 
 	$sql = "
@@ -186,99 +172,73 @@ function linked_admin_count(): int {
 }
 
 /* ========================================================================== *
- * 3) SHORTCODE: [commentary_archive] — ONLY commentary posts
- * ========================================================================== */
-
-add_shortcode('commentary_archive', function($atts = []): string {
-	$atts = shortcode_atts([
-		'posts_per_page' => get_option('posts_per_page'),
-		'paged'          => max(1, (int) get_query_var('paged')),
-	], $atts, 'commentary_archive');
-
-	$q = new WP_Query([
-		'post_type'           => 'post',
-		'posts_per_page'      => (int) $atts['posts_per_page'],
-		'paged'               => (int) $atts['paged'],
-		'ignore_sticky_posts' => true,
-		'tax_query'           => [
-			'relation' => 'OR',
-			[
-				'taxonomy' => 'post_tag',
-				'field'    => 'slug',
-				'terms'    => [TAG_COMMENTARY_SLUG, TAG_LINKLOG_SLUG],
-			],
-			[
-				'taxonomy' => 'category',
-				'field'    => 'slug',
-				'terms'    => [CAT_LINKED_SLUG], // accept legacy
-			],
-		],
-	]);
-
-	ob_start();
-
-	if ($q->have_posts()) {
-		echo '<div class="commentary-archive">';
-		while ($q->have_posts()) {
-			$q->the_post();
-			echo '<article class="commentary-item">';
-			echo '  <h2 class="entry-title"><a href="' . esc_url(get_permalink()) . '">' . esc_html(get_the_title()) . '</a></h2>';
-			echo '  <div class="entry-meta">' . esc_html(get_the_date()) . '</div>';
-			echo '  <div class="entry-excerpt">' . wp_kses_post(get_the_excerpt()) . '</div>';
-			echo '</article>';
-		}
-		echo '</div>';
-
-		$links = paginate_links([
-			'total'   => (int) $q->max_num_pages,
-			'current' => (int) $atts['paged'],
-			'type'    => 'list',
-		]);
-		if ($links) echo wp_kses_post($links);
-	} else {
-		echo '<p>' . esc_html__('No commentary posts found.', 'commentary') . '</p>';
-	}
-
-	wp_reset_postdata();
-	return (string) ob_get_clean();
-});
-
-/* ========================================================================== *
- * 4) VIRTUAL ARCHIVE: /commentary/ — ONLY commentary posts
+ * 3) TRUE VIRTUAL ARCHIVE: /commentary/ with pagination
  * ========================================================================== */
 
 function register_virtual_archive_rewrite(): void {
+	// base
 	add_rewrite_rule('^commentary/?$', 'index.php?commentary_virtual=1', 'top');
+	// pagination: /commentary/page/2/
+	add_rewrite_rule('^commentary/page/([0-9]+)/?$', 'index.php?commentary_virtual=1&paged=$matches[1]', 'top');
 }
-
 function register_virtual_archive_qv(array $vars): array {
 	$vars[] = 'commentary_virtual';
 	return $vars;
 }
 
-function maybe_render_virtual(): void {
+/**
+ * Pre-query: When /commentary/ is requested, fill MAIN QUERY with posts in
+ * the Commentary + Linked categories, and mark as an archive.
+ */
+function commentary_virtual_pre_get_posts(WP_Query $q): void {
+	if (is_admin() || !$q->is_main_query()) return;
 	if ((int) get_query_var('commentary_virtual') !== 1) return;
 
-	status_header(200);
-	add_filter('pre_get_document_title', fn() => __('Commentary', 'commentary'));
-	add_filter('body_class', function(array $classes): array {
-		$classes[] = 'commentary-virtual-archive';
-		return $classes;
-	});
+	// Build the archive query
+	$q->set('post_type', 'post');
+	$q->set('ignore_sticky_posts', true);
+	$q->set('tax_query', [[
+		'taxonomy' => 'category',
+		'field'    => 'slug',
+		'terms'    => [CAT_COMMENTARY_SLUG, CAT_LINKED_SLUG],
+		'operator' => 'IN',
+	]]);
 
-	get_header();
+	// Ensure pagination plays nice
+	$paged = get_query_var('paged');
+	if (!$paged) {
+		// Also support /commentary/?paged=2 if a theme uses that style
+		$paged = isset($_GET['paged']) ? (int) $_GET['paged'] : 1;
+	}
+	$q->set('paged', max(1, (int) $paged));
 
-	echo '<main id="primary" class="site-main">';
-	echo '  <header class="page-header"><h1 class="page-title">' . esc_html__('Commentary', 'commentary') . '</h1></header>';
-	echo do_shortcode('[commentary_archive]');
-	echo '</main>';
+	// Convince template loader we’re an archive
+	$q->is_archive  = true;
+	$q->is_home     = false;
+	$q->is_singular = false;
+	$q->is_page     = false;
+	$q->is_404      = false;
+}
 
-	get_footer();
-	exit;
+/** Archive title for /commentary/ */
+function commentary_archive_title($title) {
+	if ((int) get_query_var('commentary_virtual') === 1 && !is_admin()) {
+		return __('Commentary', 'commentary');
+	}
+	return $title;
+}
+
+/** Choose archive template (use theme’s archive.php or fallback to index.php) */
+function commentary_virtual_template(string $template): string {
+	if ((int) get_query_var('commentary_virtual') !== 1 || is_admin()) {
+		return $template;
+	}
+	$preferred = locate_template(['archive.php', 'index.php']);
+	return $preferred ?: $template;
 }
 
 /* ========================================================================== *
- * 5) META: Register post meta (Gutenberg + REST)
+ * 4) META: Register post meta (Gutenberg + REST)
  * ========================================================================== */
 
 function register_post_meta_fields(): void {
@@ -304,7 +264,7 @@ function register_post_meta_fields(): void {
 }
 
 /* ========================================================================== *
- * 6) EDITOR UI: Gutenberg sidebar + Classic metabox fallback
+ * 5) EDITOR UI: Gutenberg sidebar + Classic metabox fallback
  * ========================================================================== */
 
 add_action('enqueue_block_editor_assets', __NAMESPACE__ . '\\enqueue_block_editor_assets');
@@ -314,8 +274,10 @@ function enqueue_block_editor_assets(): void {
 	$screen = function_exists('get_current_screen') ? get_current_screen() : null;
 	if (!$screen || $screen->base !== 'post' || $screen->post_type !== 'post') return;
 
-	$linked_cat = get_term_by('slug', CAT_LINKED_SLUG, 'category');
-	$linked_cat_id = $linked_cat ? (int) $linked_cat->term_id : 0;
+	$linked_cat     = get_term_by('slug', CAT_LINKED_SLUG, 'category');
+	$comment_cat    = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
+	$linked_cat_id  = $linked_cat ? (int) $linked_cat->term_id : 0;
+	$comment_cat_id = $comment_cat ? (int) $comment_cat->term_id : 0;
 
 	$inline = '
 	( function( wp ) {
@@ -328,11 +290,12 @@ function enqueue_block_editor_assets(): void {
 		const { useSelect, useDispatch } = wp.data;
 		const { createElement: el } = wp.element;
 
-		const LINKED_CAT_ID = ' . (int) $linked_cat_id . ';
+		const LINKED_CAT_ID   = ' . (int) $linked_cat_id . ';
+		const COMM_CAT_ID     = ' . (int) $comment_cat_id . ';
 
 		const useIsCommentary = () => {
 			const cats = useSelect( s => s("core/editor").getEditedPostAttribute("categories") || [], [] );
-			return Array.isArray(cats) && cats.includes(LINKED_CAT_ID);
+			return Array.isArray(cats) && (cats.includes(LINKED_CAT_ID) || cats.includes(COMM_CAT_ID));
 		};
 
 		const Panel = () => {
@@ -367,7 +330,7 @@ function enqueue_block_editor_assets(): void {
 					)
 				),
 
-				el( Tooltip, { text: __("Link titles to post page (not external site)", "commentary") },
+				el( Tooltip, { text: __("(Legacy toggle—kept for compatibility)", "commentary") },
 					el( "div", {},
 						el( ToggleControl, {
 							label: __("Use post permalink in lists", "commentary"),
@@ -416,7 +379,7 @@ function render_classic_metabox(WP_Post $post): void {
 		</label>
 	</p>
 	<p>
-		<label title="<?php echo esc_attr__('Link titles to post page (not external site)', 'commentary'); ?>">
+		<label title="<?php echo esc_attr__('(Legacy toggle—kept for compatibility)', 'commentary'); ?>">
 			<input type="checkbox" name="<?php echo esc_attr(META_SKIP_REWRITE); ?>" value="1" <?php checked(true, $skip_rewrite); ?> />
 			<?php echo esc_html__('Use post permalink in lists', 'commentary'); ?>
 		</label>
@@ -436,14 +399,13 @@ function save_classic_metabox(int $post_id, WP_Post $post): void {
 }
 
 /* ========================================================================== *
- * 7) LISTINGS: Title glyph + title rewrite (external link) for block & classic
+ * 6) LISTINGS & SINGLE: glyph (external) and title behavior
  * ========================================================================== */
 
-/** Get a safe external URL if present and allowed by per-post toggle. */
+/** Get a safe external URL (http/https) for a post if present. */
 function get_commentary_external_url(WP_Post $post): string {
 	$url = trim((string) get_post_meta($post->ID, META_URL, true));
 	if ($url === '') return '';
-	if ((bool) get_post_meta($post->ID, META_SKIP_REWRITE, true)) return ''; // per-post: keep internal titles
 	$parsed = wp_parse_url($url);
 	if (!is_array($parsed) || !isset($parsed['scheme']) || !in_array(strtolower((string) $parsed['scheme']), ['http','https'], true)) {
 		return '';
@@ -453,39 +415,29 @@ function get_commentary_external_url(WP_Post $post): string {
 
 /**
  * BLOCK THEMES:
- * - Rewrite <a href> inside core/post-title to external URL on listings.
- * - Append glyph anchor (∞) linking to internal permalink to the RIGHT of the title.
- * - All other links remain internal (we only touch the post-title block).
+ * - Do NOT rewrite post-title href (titles remain internal on listings; unlinked on singles by theme).
+ * - Append a glyph after the title closing tag — glyph links to EXTERNAL URL when present.
  */
 add_filter('render_block', __NAMESPACE__ . '\\filter_post_title_block', 20, 2);
 function filter_post_title_block(string $html, array $block): string {
 	if (($block['blockName'] ?? '') !== 'core/post-title') return $html;
-	if (is_admin() || is_feed() || is_single()) return $html;
+	if (is_admin() || is_feed()) return $html;
 
 	$post = get_post();
 	if (!$post instanceof WP_Post || $post->post_type !== 'post' || !is_commentary_post($post)) return $html;
 
 	$external = get_commentary_external_url($post);
-	$perma    = get_permalink($post);
+	if ($external === '') return $html;
 
-	// 1) If we have an external URL, replace the first href="...".
-	if ($external !== '') {
-		$html = preg_replace(
-			'~(<a\b[^>]*\bhref=)["\']([^"\']+)["\']~i',
-			'$1"' . esc_url($external) . '"',
-			$html,
-			1
-		) ?: $html;
-	}
-
-	// 2) Inject glyph (∞) as a separate anchor to the RIGHT of the title (internal permalink).
+	// Inject glyph (∞) to the RIGHT of the title → EXTERNAL link.
 	if (!str_contains($html, 'commentary-permalink-glyph')) {
 		$glyph = apply_filters('commentary_glyph_text', GLYPH_DEFAULT, $post);
 		$glyph = is_string($glyph) && $glyph !== '' ? $glyph : GLYPH_DEFAULT;
 
 		$glyph_html = sprintf(
-			'<span class="commentary-permalink-glyph"><a href="%s" rel="bookmark">%s</a></span>',
-			esc_url($perma),
+			'<span class="commentary-permalink-glyph"><a href="%s" rel="noopener nofollow ugc" title="%s" aria-label="external-link">%s</a></span>',
+			esc_url($external),
+			esc_attr__('External Link', 'commentary'),
 			esc_html($glyph)
 		);
 		$modified = preg_replace('~(</h[1-6]>)\s*$~i', ' ' . $glyph_html . '$1', $html, 1);
@@ -497,84 +449,56 @@ function filter_post_title_block(string $html, array $block): string {
 
 /**
  * CLASSIC THEMES:
- * - We DO NOT rewrite permalinks globally (so all non-title links remain internal).
- * - Instead, we:
- *   a) add a span placeholder after the title text with data-permalink (internal) and data-external (if any),
- *   b) run a tiny JS that:
- *      - finds the nearest title anchor and, if data-external present, sets that anchor's href to the external URL,
- *      - moves the glyph out of the anchor and appends a separate permalink anchor next to the title.
+ * - We do not touch the title permalink (internal).
+ * - Append a span placeholder with data-external; tiny JS converts it to an external glyph link.
  */
 add_filter('the_title', __NAMESPACE__ . '\\append_classic_title_glyph_placeholder', 20, 2);
 function append_classic_title_glyph_placeholder(string $title, int $post_id): string {
-	if (is_admin() || is_feed() || is_single()) return $title;
+	if (is_admin() || is_feed()) return $title;
 
 	$post = get_post($post_id);
 	if (!$post instanceof WP_Post || $post->post_type !== 'post' || !is_commentary_post($post)) return $title;
 
-	$glyph   = apply_filters('commentary_glyph_text', GLYPH_DEFAULT, $post);
-	$glyph   = is_string($glyph) && $glyph !== '' ? $glyph : GLYPH_DEFAULT;
-	$perma   = get_permalink($post);
-	$external = get_commentary_external_url($post); // may be empty
+	$external = get_commentary_external_url($post);
+	if ($external === '') return $title;
+
+	$glyph = apply_filters('commentary_glyph_text', GLYPH_DEFAULT, $post);
+	$glyph = is_string($glyph) && $glyph !== '' ? $glyph : GLYPH_DEFAULT;
 
 	if (str_contains($title, 'commentary-permalink-glyph')) return $title;
 
 	$span = sprintf(
-		' <span class="commentary-permalink-glyph" data-permalink="%s"%s>%s</span>',
-		esc_attr($perma),
-		$external !== '' ? ' data-external="' . esc_attr($external) . '"' : '',
+		' <span class="commentary-permalink-glyph" data-external="%s" title="%s" aria-label="external-link">%s</span>',
+		esc_attr($external),
+		esc_attr__('External Link', 'commentary'),
 		esc_html($glyph)
 	);
 
 	return rtrim($title) . $span;
 }
 
-/** Inline script to tweak classic theme titles only; does not touch other links. */
+/** Classic themes helper: turn glyph span into an external link; never change the title href. */
 add_action('wp_enqueue_scripts', __NAMESPACE__ . '\\enqueue_classic_fix_script');
 function enqueue_classic_fix_script(): void {
-	if (is_admin() || is_feed() || is_singular()) return;
-	if (!is_home() && !is_archive() && !is_search() && !is_category() && !is_tag()) return;
+	if (is_admin() || is_feed()) return;
 
 	$js = <<<JS
 document.addEventListener('DOMContentLoaded',function(){
   var spans = document.querySelectorAll('h1 .commentary-permalink-glyph, h2 .commentary-permalink-glyph, h3 .commentary-permalink-glyph, h4 .commentary-permalink-glyph, h5 .commentary-permalink-glyph, h6 .commentary-permalink-glyph');
   spans.forEach(function(span){
-    var perma = span.getAttribute('data-permalink') || '';
     var external = span.getAttribute('data-external') || '';
-    var parentLink = span.closest('a');
     var heading = span.closest('h1,h2,h3,h4,h5,h6');
+    if (!heading || !external) return;
 
-    if (!heading) return;
-
-    // If we are inside the title <a>, move span out and set title href to external (if provided).
-    if (parentLink && heading.contains(parentLink)) {
-      // Remove the span from inside the title link.
-      parentLink.removeChild(span);
-
-      // Rewrite title link to external (only if we have an external URL).
-      if (external) { parentLink.setAttribute('href', external); }
-
-      // Create a new glyph link to the internal permalink and insert after the title link.
-      if (perma) {
-        var a = document.createElement('a');
-        a.href = perma;
-        a.className = 'commentary-permalink-glyph-link';
-        a.setAttribute('rel','bookmark');
-        a.appendChild(document.createTextNode('' + (span.textContent || '∞')));
-        parentLink.insertAdjacentText('afterend',' ');
-        parentLink.insertAdjacentElement('afterend', a);
-      }
-      return;
-    }
-
-    // Fallback: if not inside a title <a>, just convert span into an <a> permalink right after the heading text.
-    if (perma) {
-      var a2 = document.createElement('a');
-      a2.href = perma;
-      a2.className = 'commentary-permalink-glyph-link';
-      a2.setAttribute('rel','bookmark');
-      a2.appendChild(document.createTextNode('' + (span.textContent || '∞')));
-      span.replaceWith(a2);
-    }
+    // Replace the span with a dedicated external link
+    var a = document.createElement('a');
+    a.href = external;
+    a.className = 'commentary-permalink-glyph-link';
+    a.setAttribute('rel','noopener nofollow ugc');
+    a.setAttribute('title','External Link');
+    a.setAttribute('aria-label','external-link');
+    a.appendChild(document.createTextNode(span.textContent || '∞'));
+    span.replaceWith(a);
   });
 });
 JS;
@@ -584,30 +508,54 @@ JS;
 }
 
 /* ========================================================================== *
- * 8) AUTO-TAGGING: Assign 'commentary' and 'linklog' to qualifying posts
+ * 7) AUTO-CATEGORIZE & ASIDE FORMAT on qualifying posts
  * ========================================================================== */
 
-add_action('save_post_post', __NAMESPACE__ . '\\ensure_commentary_tags_on_save', 20, 3);
-function ensure_commentary_tags_on_save(int $post_id, WP_Post $post, bool $update): void {
+add_action('save_post_post', __NAMESPACE__ . '\\ensure_commentary_categories_and_format', 20, 3);
+function ensure_commentary_categories_and_format(int $post_id, WP_Post $post, bool $update): void {
 	if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
 	if (!current_user_can('edit_post', $post_id)) return;
 
-	$has_linked_cat = has_term(CAT_LINKED_SLUG, 'category', $post);
-	$url            = (string) get_post_meta($post_id, META_URL, true);
+	ensure_categories();
 
-	if (!$has_linked_cat && $url === '') return; // not qualifying
+	$url            = trim((string) get_post_meta($post_id, META_URL, true));
+	$has_linked     = has_term(CAT_LINKED_SLUG, 'category', $post);
+	$has_commentary = has_term(CAT_COMMENTARY_SLUG, 'category', $post);
 
-	ensure_terms();
+	// Qualify if URL present OR either category already present
+	if ($url === '' && !$has_linked && !$has_commentary) {
+		return;
+	}
 
-	$current_terms = wp_get_post_terms($post_id, 'post_tag', ['fields' => 'slugs']);
-	if (!is_array($current_terms)) $current_terms = [];
+	// Current cats
+	$current = wp_get_post_terms($post_id, 'category', ['fields' => 'ids']);
+	if (!is_array($current)) $current = [];
 
-	$desired = array_unique(array_merge($current_terms, [TAG_COMMENTARY_SLUG, TAG_LINKLOG_SLUG]));
-	wp_set_post_terms($post_id, $desired, 'post_tag', false);
+	// Remove default "Uncategorized"
+	$default_cat_id = (int) get_option('default_category');
+	$current = array_map('intval', $current);
+	$current = array_filter($current, fn($id) => $id !== $default_cat_id);
+
+	// Ensure Linked + Commentary exist and add them
+	$term_linked     = get_term_by('slug', CAT_LINKED_SLUG, 'category');
+	$term_commentary = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
+	$add_ids = [];
+	if ($term_linked)     { $add_ids[] = (int) $term_linked->term_id; }
+	if ($term_commentary) { $add_ids[] = (int) $term_commentary->term_id; }
+
+	$cats = array_values(array_unique(array_merge($current, $add_ids)));
+	if ($cats) {
+		wp_set_post_categories($post_id, $cats, false);
+	}
+
+	// Set Post Format: Aside (if supported)
+	if (post_type_supports('post', 'post-formats')) {
+		set_post_format($post_id, 'aside');
+	}
 }
 
 /* ========================================================================== *
- * 9) DEDICATED ADMIN PANEL
+ * 8) DEDICATED ADMIN PANEL + SETTINGS (single redirect)
  * ========================================================================== */
 
 add_action('admin_menu', __NAMESPACE__ . '\\register_commentary_panel');
@@ -656,15 +604,13 @@ function handle_add_new_redirect_early(): void {
 	if (!is_admin() || !current_user_can('edit_posts')) return;
 	if (($_GET['page'] ?? '') !== 'commentary-add-new') return;
 
-	ensure_terms();
-	$cat  = get_term_by('slug', CAT_LINKED_SLUG, 'category');
-	$tag1 = get_term_by('slug', TAG_COMMENTARY_SLUG, 'post_tag');
-	$tag2 = get_term_by('slug', TAG_LINKLOG_SLUG, 'post_tag');
+	ensure_categories();
+	$catLinked  = get_term_by('slug', CAT_LINKED_SLUG, 'category');
+	$catComm    = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
 
 	$url = admin_url('post-new.php?post_type=post');
-	if ($cat)  { $url = add_query_arg(['tax_input[category][]' => (int) $cat->term_id], $url); }
-	if ($tag1) { $url = add_query_arg(['tax_input[post_tag][]' => (int) $tag1->term_id], $url); }
-	if ($tag2) { $url = add_query_arg(['tax_input[post_tag][]' => (int) $tag2->term_id], $url); }
+	if ($catLinked) { $url = add_query_arg(['tax_input[category][]' => (int) $catLinked->term_id], $url); }
+	if ($catComm)   { $url = add_query_arg(['tax_input[category][]' => (int) $catComm->term_id], $url); }
 
 	wp_safe_redirect($url);
 	exit;
@@ -686,19 +632,12 @@ function render_commentary_panel(): void {
 		'paged'          => $paged,
 		'orderby'        => 'date',
 		'order'          => 'DESC',
-		'tax_query'      => [
-			'relation' => 'OR',
-			[
-				'taxonomy' => 'post_tag',
-				'field'    => 'slug',
-				'terms'    => [TAG_COMMENTARY_SLUG, TAG_LINKLOG_SLUG],
-			],
-			[
-				'taxonomy' => 'category',
-				'field'    => 'slug',
-				'terms'    => [CAT_LINKED_SLUG],
-			],
-		],
+		'tax_query'      => [[
+			'taxonomy' => 'category',
+			'field'    => 'slug',
+			'terms'    => [CAT_COMMENTARY_SLUG, CAT_LINKED_SLUG],
+			'operator' => 'IN',
+		]],
 	];
 	if ($search !== '') $args['s'] = $search;
 
@@ -730,7 +669,7 @@ function render_commentary_panel(): void {
 			</thead>
 			<tbody>
 			<?php if ($q->have_posts()) : while ($q->have_posts()) : $q->the_post();
-				$post = get_post();
+				$post  = get_post();
 				$perma = get_edit_post_link($post->ID);
 				$url   = (string) get_post_meta($post->ID, META_URL, true);
 			?>
@@ -771,10 +710,7 @@ function render_commentary_panel(): void {
 	<?php
 }
 
-/* ========================================================================== *
- * 10) SETTINGS: Optional single-view redirect
- * ========================================================================== */
-
+/* Settings (single-view redirect) */
 add_action('admin_init', __NAMESPACE__ . '\\register_settings');
 function register_settings(): void {
 	register_setting(OPT_GROUP, OPT_SINGLE_REDIRECT, [
@@ -814,7 +750,7 @@ function render_settings_page(): void {
 	</div>
 <?php }
 
-/* Redirect logic: runs only on front-end single post view if enabled. */
+/* Optional redirect logic (single view) */
 add_action('template_redirect', __NAMESPACE__ . '\\maybe_redirect_single', 1);
 function maybe_redirect_single(): void {
 	if (is_admin() || is_feed() || !is_singular('post')) return;
@@ -840,7 +776,31 @@ function maybe_redirect_single(): void {
 }
 
 /* ========================================================================== *
- * 11) GLYPH HELPERS
+ * 9) CSS: Glyph opacity (50%) and hover 100%
+ * ========================================================================== */
+
+add_action('wp_enqueue_scripts', __NAMESPACE__ . '\\enqueue_front_css');
+function enqueue_front_css(): void {
+	$css = <<<CSS
+/* Commentary glyph styles */
+.commentary-permalink-glyph a,
+a.commentary-permalink-glyph-link {
+  opacity: .5;
+  text-decoration: none;
+}
+.commentary-permalink-glyph a:hover,
+a.commentary-permalink-glyph-link:hover {
+  opacity: 1;
+  text-decoration: none;
+}
+CSS;
+	wp_register_style('commentary-inline', false, [], null);
+	wp_enqueue_style('commentary-inline');
+	wp_add_inline_style('commentary-inline', $css);
+}
+
+/* ========================================================================== *
+ * 10) GLYPH Helpers
  * ========================================================================== */
 
 add_filter('commentary_glyph_text', function(string $glyph, WP_Post $post): string {
