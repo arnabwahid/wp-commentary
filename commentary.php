@@ -1,8 +1,10 @@
 <?php
 /**
  * Plugin Name:  Commentary
- * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, applies your chosen Post Format (Link or Standard), adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), optional single-view redirect, an option to exclude Commentary posts from the main blog loop, defaults Add-New flow to Link format, and includes a per-post “Lock this post’s format” toggle.
+ * Plugin URI: http://github.com/arnabwahid
+ * Description:  Commentary-style link blogging (no CPT).
  * Version:      4.13.0
+ * Author: arnabwahid, peiche, kevindayton, yjsoon
  * Requires PHP: 8.0
  * Requires at least: 6.3
  * Tested up to: 6.7
