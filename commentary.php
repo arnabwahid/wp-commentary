@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:  Commentary
- * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, sets Aside post format, adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), and an optional single-view redirect.
- * Version:      4.9.0
+ * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, sets Aside post format, adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), optional single-view redirect, and an option to exclude Commentary posts from the main blog loop.
+ * Version:      4.10.0
  * Requires PHP: 8.0
  * Requires at least: 6.3
  * Tested up to: 6.7
@@ -49,6 +49,7 @@ const META_SKIP_REWRITE      = 'commentary_skip_rewrite';  // legacy toggle
 
 const OPT_GROUP              = 'commentary';
 const OPT_SINGLE_REDIRECT    = 'commentary_single_redirect';
+const OPT_EXCLUDE_MAIN       = 'commentary_exclude_main_loop'; // NEW: exclude Commentary from main loop
 
 /* ========================================================================== *
  * 0) ACTIVATION / DEACTIVATION / INIT
@@ -61,6 +62,9 @@ function on_activate(): void {
 	ensure_terms_on_activation(); // Create categories + tags once on activation
 	if (get_option(OPT_SINGLE_REDIRECT, null) === null) {
 		add_option(OPT_SINGLE_REDIRECT, 0);
+	}
+	if (get_option(OPT_EXCLUDE_MAIN, null) === null) {
+		add_option(OPT_EXCLUDE_MAIN, 0);
 	}
 	register_virtual_archive_rewrite();
 	flush_rewrite_rules();
@@ -78,6 +82,9 @@ add_filter('query_vars', __NAMESPACE__ . '\\register_virtual_archive_qv');
 add_action('pre_get_posts', __NAMESPACE__ . '\\commentary_virtual_pre_get_posts');
 add_filter('get_the_archive_title', __NAMESPACE__ . '\\commentary_archive_title');
 add_filter('template_include', __NAMESPACE__ . '\\commentary_virtual_template', 50);
+
+// NEW: exclude commentary posts from the main blog loop (if option enabled)
+add_action('pre_get_posts', __NAMESPACE__ . '\\maybe_exclude_commentary_from_main', 20);
 
 // Meta and editor UI
 add_action('init', __NAMESPACE__ . '\\register_post_meta_fields');
@@ -222,6 +229,25 @@ function commentary_virtual_template(string $template): string {
 	}
 	$preferred = locate_template(['archive.php', 'index.php']);
 	return $preferred ?: $template;
+}
+
+/* ========================================================================== *
+ * 3b) NEW: Exclude Commentary posts from the main blog loop (home) if enabled
+ * ========================================================================== */
+
+function maybe_exclude_commentary_from_main(WP_Query $q): void {
+	if (is_admin() || !$q->is_main_query()) return;
+	if (!$q->is_home()) return; // only the main blog loop
+	if (!get_option(OPT_EXCLUDE_MAIN, 0)) return; // setting disabled
+
+	$existing = (array) $q->get('tax_query');
+	$existing[] = [
+		'taxonomy' => 'category',
+		'field'    => 'slug',
+		'terms'    => [CAT_COMMENTARY_SLUG],
+		'operator' => 'NOT IN',
+	];
+	$q->set('tax_query', $existing);
 }
 
 /* ========================================================================== *
@@ -506,7 +532,7 @@ function ensure_commentary_terms_and_format(int $post_id, WP_Post $post, bool $u
 		wp_set_post_categories($post_id, $final_cats, false);
 	}
 
-	/* Tags: automatically assign "Commentary" and "Linked" (create only on activation; here we just attach if found) */
+	/* Tags: automatically assign "Commentary" and "Linked" (created on activation) */
 	$current_tags = wp_get_post_terms($post_id, 'post_tag', ['fields' => 'ids']);
 	if (!is_array($current_tags)) $current_tags = [];
 
@@ -517,7 +543,6 @@ function ensure_commentary_terms_and_format(int $post_id, WP_Post $post, bool $u
 	if ($tag_commentary) { $add_tag_ids[] = (int) $tag_commentary->term_id; }
 
 	$final_tags = array_values(array_unique(array_merge($current_tags, $add_tag_ids)));
-	// Only set if we have something; do not wipe tags if none exist
 	if ($final_tags) {
 		wp_set_post_terms($post_id, $final_tags, 'post_tag', false);
 	}
@@ -529,7 +554,7 @@ function ensure_commentary_terms_and_format(int $post_id, WP_Post $post, bool $u
 }
 
 /* ========================================================================== *
- * 8) DEDICATED ADMIN PANEL + SETTINGS (single redirect)
+ * 8) DEDICATED ADMIN PANEL + SETTINGS (single redirect + exclude main loop)
  * ========================================================================== */
 
 add_action('admin_menu', __NAMESPACE__ . '\\register_commentary_panel');
@@ -577,7 +602,7 @@ function handle_add_new_redirect_early(): void {
 	if (!is_admin() || !current_user_can('edit_posts')) return;
 	if (($_GET['page'] ?? '') !== 'commentary-add-new') return;
 
-	// We no longer create categories here; they are created only on activation.
+	// Terms are created on activation; here we just use them if present.
 	$catLinked  = get_term_by('slug', CAT_LINKED_SLUG, 'category');
 	$catComm    = get_term_by('slug', CAT_COMMENTARY_SLUG, 'category');
 
@@ -697,10 +722,15 @@ function render_commentary_panel(): void {
 	<?php
 }
 
-/* Settings (single-view redirect) */
+/* Settings (single-view redirect + exclude main loop) */
 add_action('admin_init', __NAMESPACE__ . '\\register_settings');
 function register_settings(): void {
 	register_setting(OPT_GROUP, OPT_SINGLE_REDIRECT, [
+		'type'              => 'boolean',
+		'sanitize_callback' => fn($v): bool => (bool) $v,
+		'default'           => 0,
+	]);
+	register_setting(OPT_GROUP, OPT_EXCLUDE_MAIN, [
 		'type'              => 'boolean',
 		'sanitize_callback' => fn($v): bool => (bool) $v,
 		'default'           => 0,
@@ -717,6 +747,18 @@ function register_settings(): void {
 			$val = (bool) get_option(OPT_SINGLE_REDIRECT, 0);
 			echo '<label><input type="checkbox" name="' . esc_attr(OPT_SINGLE_REDIRECT) . '" value="1" ' . checked(true, $val, false) . ' />';
 			echo ' ' . esc_html__('On single post view, redirect to the external Link URL (append ?stay=1 to bypass).', 'commentary') . '</label>';
+		},
+		'commentary_settings',
+		'commentary_main'
+	);
+
+	add_settings_field(
+		OPT_EXCLUDE_MAIN,
+		__('Exclude Commentary from main blog loop', 'commentary'),
+		function() {
+			$val = (bool) get_option(OPT_EXCLUDE_MAIN, 0);
+			echo '<label><input type="checkbox" name="' . esc_attr(OPT_EXCLUDE_MAIN) . '" value="1" ' . checked(true, $val, false) . ' />';
+			echo ' ' . esc_html__('Hide posts in the “Commentary” category from the home/posts page loop.', 'commentary') . '</label>';
 		},
 		'commentary_settings',
 		'commentary_main'
