@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name:  Commentary
- * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, applies your chosen Post Format (Link or Standard), adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), optional single-view redirect, an option to exclude Commentary posts from the main blog loop, and defaults new Commentary posts to Link format.
- * Version:      4.12.0
+ * Description:  Commentary-style link blogging (no CPT). Ensures "Linked" and "Commentary" categories/tags on activation, auto-categorizes qualifying posts (and removes “Uncategorized”), auto-tags “Commentary” + “Linked”, applies your chosen Post Format (Link or Standard), adds a Commentary admin panel, a theme-driven virtual archive at /commentary/ (with pagination), a Gutenberg sidebar (with classic metabox fallback), glyphs on listings & singles (∞ → external URL), optional single-view redirect, an option to exclude Commentary posts from the main blog loop, defaults Add-New flow to Link format, and includes a per-post “Lock this post’s format” toggle.
+ * Version:      4.13.0
  * Requires PHP: 8.0
  * Requires at least: 6.3
  * Tested up to: 6.7
@@ -46,6 +46,7 @@ const TAG_COMMENTARY_SLUG    = 'commentary';
 const META_URL               = 'commentary_url';
 const META_SKIP_REDIRECT     = 'commentary_skip_redirect';
 const META_SKIP_REWRITE      = 'commentary_skip_rewrite'; // legacy toggle kept for compatibility
+const META_LOCK_FORMAT       = 'commentary_lock_format';  // NEW per-post lock
 
 const OPT_GROUP              = 'commentary';
 const OPT_SINGLE_REDIRECT    = 'commentary_single_redirect';
@@ -261,14 +262,14 @@ function register_post_meta_fields(): void {
 		'default'           => '',
 		'description'       => __('External URL for this Commentary post', 'commentary'),
 	]);
-	foreach ([META_SKIP_REDIRECT, META_SKIP_REWRITE] as $bool_meta) {
+	foreach ([META_SKIP_REDIRECT, META_SKIP_REWRITE, META_LOCK_FORMAT] as $bool_meta) {
 		register_post_meta('post', $bool_meta, [
 			'type'              => 'boolean',
 			'single'            => true,
 			'show_in_rest'      => true,
 			'auth_callback'     => fn(): bool => current_user_can('edit_posts'),
 			'sanitize_callback' => fn($v): bool => (bool) $v,
-			'default'           => false,
+			'default'           => false, // lock is OFF by default
 		]);
 	}
 }
@@ -332,6 +333,16 @@ function enqueue_block_editor_assets(): void {
 							onChange: (v) => setMeta("' . META_SKIP_REWRITE . '", !!v)
 						})
 					)
+				),
+
+				el( Tooltip, { text: __("Prevent the plugin from changing this post’s format on save", "commentary") },
+					el( "div", {},
+						el( ToggleControl, {
+							label: __("Lock this post’s format", "commentary"),
+							checked: !!meta.' . META_LOCK_FORMAT . ',
+							onChange: (v) => setMeta("' . META_LOCK_FORMAT . '", !!v)
+						})
+					)
 				)
 			);
 		};
@@ -361,6 +372,7 @@ function render_classic_metabox(WP_Post $post): void {
 	$url           = (string) get_post_meta($post->ID, META_URL, true);
 	$skip_redirect = (bool) get_post_meta($post->ID, META_SKIP_REDIRECT, true);
 	$skip_rewrite  = (bool) get_post_meta($post->ID, META_SKIP_REWRITE, true);
+	$lock_format   = (bool) get_post_meta($post->ID, META_LOCK_FORMAT, true);
 	?>
 	<p>
 		<label for="commentary_url_field" class="screen-reader-text"><?php echo esc_html__('External URL', 'commentary'); ?></label>
@@ -378,6 +390,12 @@ function render_classic_metabox(WP_Post $post): void {
 			<?php echo esc_html__('Use post permalink in lists', 'commentary'); ?>
 		</label>
 	</p>
+	<p>
+		<label title="<?php echo esc_attr__('Prevent the plugin from changing this post’s format on save', 'commentary'); ?>">
+			<input type="checkbox" name="<?php echo esc_attr(META_LOCK_FORMAT); ?>" value="1" <?php checked(true, $lock_format); ?> />
+			<?php echo esc_html__('Lock this post’s format', 'commentary'); ?>
+		</label>
+	</p>
 	<p class="description"><?php echo esc_html__('Tip: Adding a Link URL will auto-categorize & tag this post as Commentary + Linked and remove Uncategorized on save.', 'commentary'); ?></p>
 	<?php
 }
@@ -391,6 +409,7 @@ function save_classic_metabox(int $post_id, WP_Post $post): void {
 	update_post_meta($post_id, META_URL, esc_url_raw((string) ($_POST[META_URL] ?? '')));
 	update_post_meta($post_id, META_SKIP_REDIRECT, !empty($_POST[META_SKIP_REDIRECT]) ? 1 : 0);
 	update_post_meta($post_id, META_SKIP_REWRITE, !empty($_POST[META_SKIP_REWRITE]) ? 1 : 0);
+	update_post_meta($post_id, META_LOCK_FORMAT, !empty($_POST[META_LOCK_FORMAT]) ? 1 : 0);
 }
 
 /* ========================================================================== *
@@ -540,14 +559,16 @@ function ensure_commentary_terms_and_format(int $post_id, WP_Post $post, bool $u
 		wp_set_post_terms($post_id, $final_tags, 'post_tag', false);
 	}
 
-	/* Apply Post Format per setting (if supported by theme) */
+	/* Apply Post Format per setting (if supported by theme), unless locked per-post. */
 	if (post_type_supports('post', 'post-formats')) {
-		$choice = get_option(OPT_POST_FORMAT, 'link'); // 'link' or 'standard'
-		if ($choice === 'standard') {
-			// Remove any assigned format to make it Standard
-			set_post_format($post_id, false);
-		} else {
-			set_post_format($post_id, 'link');
+		$locked = (bool) get_post_meta($post_id, META_LOCK_FORMAT, true);
+		if (!$locked) {
+			$choice = get_option(OPT_POST_FORMAT, 'link'); // 'link' or 'standard'
+			if ($choice === 'standard') {
+				set_post_format($post_id, false); // Standard
+			} else {
+				set_post_format($post_id, 'link'); // Link format
+			}
 		}
 	}
 }
@@ -617,10 +638,7 @@ function handle_add_new_redirect_early(): void {
 	exit;
 }
 
-/**
- * Force the default post format to "link" when opening Add New from our panel.
- * This does not change the global default; it only affects that creation flow.
- */
+/** Force the default post format to "link" when opening Add New from our panel. */
 add_filter('default_post_format', function(string $format): string {
 	if (is_admin() && isset($_GET[QV_FORCE_LINK_FORMAT]) && $_GET[QV_FORCE_LINK_FORMAT] === '1') {
 		return 'link';
@@ -790,7 +808,7 @@ function register_settings(): void {
 		'commentary_main'
 	);
 
-	// NEW: Post format selector (Standard vs Link)
+	// Post format selector (Standard vs Link)
 	add_settings_field(
 		OPT_POST_FORMAT,
 		__('Post Format for Commentary', 'commentary'),
@@ -806,7 +824,7 @@ function register_settings(): void {
 				</option>
 			</select>
 			<p class="description">
-				<?php esc_html_e('Applied automatically to qualifying Commentary posts on save (if your theme supports Post Formats).', 'commentary'); ?>
+				<?php esc_html_e('Applied automatically to qualifying Commentary posts on save (if your theme supports Post Formats). Use the per-post “Lock this post’s format” to prevent changes.', 'commentary'); ?>
 			</p>
 			<?php
 		},
