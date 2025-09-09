@@ -54,6 +54,7 @@ const OPT_GROUP              = 'commentary';
 const OPT_SINGLE_REDIRECT    = 'commentary_single_redirect';
 const OPT_EXCLUDE_MAIN       = 'commentary_exclude_main_loop';
 const OPT_POST_FORMAT        = 'commentary_post_format'; // 'link' | 'standard'
+const OPT_SHOW_GLYPH_SINGLE  = 'commentary_show_glyph_on_single'; // boolean: show glyph on single posts
 
 /* Internal flag used when opening Add New from our panel (to default Link format). */
 const QV_FORCE_LINK_FORMAT   = 'commentary_default_format';
@@ -70,6 +71,7 @@ function on_activate(): void {
 	add_option(OPT_SINGLE_REDIRECT, 0);
 	add_option(OPT_EXCLUDE_MAIN, 0);
 	add_option(OPT_POST_FORMAT, 'link'); // default now: LINK format
+	add_option(OPT_SHOW_GLYPH_SINGLE, 1); // show glyph on single posts by default
 	register_virtual_archive_rewrite();
 	flush_rewrite_rules();
 }
@@ -453,7 +455,65 @@ function filter_post_title_block(string $html, array $block): string {
 		$modified = preg_replace('~(</h[1-6]>)\s*$~i', ' ' . $glyph_html . '$1', $html, 1);
 		$html = $modified ?: $html;
 	}
-	return $html;
+return $html;
+}
+
+// Post-process block title to swap links: title → external, glyph → internal.
+add_filter('render_block', __NAMESPACE__ . '\\filter_post_title_block_swap', 30, 2);
+function filter_post_title_block_swap(string $html, array $block): string {
+    if (($block['blockName'] ?? '') !== 'core/post-title') return $html;
+    if (is_admin() || is_feed()) return $html;
+
+    $post = get_post();
+    if (!$post instanceof WP_Post || $post->post_type !== 'post' || !is_commentary_post($post)) return $html;
+
+    $external = get_commentary_external_url($post);
+    if ($external === '') return $html;
+
+    $permalink = get_permalink($post);
+
+    // If there is no title anchor before the glyph, wrap the title contents with an external link.
+    $glyphPos = strpos($html, '<span class="commentary-permalink-glyph');
+    $pre = $glyphPos !== false ? substr($html, 0, $glyphPos) : $html;
+    if (stripos($pre, '<a') === false) {
+        // Wrap inner heading content (before glyph) with anchor to external URL.
+        $html = preg_replace(
+            '~(<h[1-6][^>]*>)(.*?)(<span class=\"commentary-permalink-glyph|</h[1-6]>)~is',
+            '$1<a href="' . esc_url($external) . '" rel="noopener nofollow ugc">$2</a>$3',
+            $html,
+            1
+        ) ?: $html;
+    }
+
+    // Ensure the first anchor (the title link) points to the external URL.
+    $html = preg_replace(
+        '~(<a\b[^>]*href=\")[^\"]+(\")~i',
+        '$1' . esc_url($external) . '$2',
+        $html,
+        1
+    ) ?: $html;
+
+    // Ensure the glyph anchor points to the INTERNAL permalink and adjust labels.
+    $html = preg_replace(
+        '~(<span class=\"commentary-permalink-glyph\"[^>]*>\s*<a\b[^>]*href=\")[^\"]+(\")~i',
+        '$1' . esc_url($permalink) . '$2',
+        $html,
+        1
+    ) ?: $html;
+    $html = preg_replace(
+        '~(<span class=\"commentary-permalink-glyph\"[^>]*>\s*<a[^>]*?)aria-label=\"[^\"]*\"~i',
+        '$1aria-label="internal-permalink"',
+        $html,
+        1
+    ) ?: $html;
+    $html = preg_replace(
+        '~(<span class=\"commentary-permalink-glyph\"[^>]*>\s*<a[^>]*?)title=\"[^\"]*\"~i',
+        '$1title="' . esc_attr__('Permalink', 'commentary') . '"',
+        $html,
+        1
+    ) ?: $html;
+
+    return $html;
 }
 
 /* Classic themes: add span placeholder and upgrade to link with small JS. */
@@ -473,9 +533,10 @@ function append_classic_title_glyph_placeholder(string $title, int $post_id): st
 	if (str_contains($title, 'commentary-permalink-glyph')) return $title;
 
 	$span = sprintf(
-		' <span class="commentary-permalink-glyph" data-external="%s" title="%s" aria-label="external-link">%s</span>',
+		' <span class="commentary-permalink-glyph" data-external="%s" data-permalink="%s" title="%s" aria-label="internal-permalink">%s</span>',
 		esc_attr($external),
-		esc_attr__('External Link', 'commentary'),
+		esc_attr(get_permalink($post)),
+		esc_attr__('Permalink', 'commentary'),
 		esc_html($glyph)
 	);
 
@@ -491,16 +552,34 @@ document.addEventListener('DOMContentLoaded',function(){
   var spans = document.querySelectorAll('h1 .commentary-permalink-glyph, h2 .commentary-permalink-glyph, h3 .commentary-permalink-glyph, h4 .commentary-permalink-glyph, h5 .commentary-permalink-glyph, h6 .commentary-permalink-glyph');
   spans.forEach(function(span){
     var external = span.getAttribute('data-external') || '';
+    var permalink = span.getAttribute('data-permalink') || '';
     var heading = span.closest('h1,h2,h3,h4,h5,h6');
     if (!heading || !external) return;
-    var a = document.createElement('a');
-    a.href = external;
-    a.className = 'commentary-permalink-glyph-link';
-    a.setAttribute('rel','noopener nofollow ugc');
-    a.setAttribute('title','External Link');
-    a.setAttribute('aria-label','external-link');
-    a.appendChild(document.createTextNode(span.textContent || '∞'));
-    span.replaceWith(a);
+
+    // Ensure title links to the external URL.
+    var titleLink = heading.querySelector('a');
+    if (titleLink) {
+      titleLink.setAttribute('href', external);
+      titleLink.setAttribute('rel','noopener nofollow ugc');
+    } else {
+      var aTitle = document.createElement('a');
+      aTitle.href = external;
+      aTitle.setAttribute('rel','noopener nofollow ugc');
+      while (heading.firstChild && heading.firstChild !== span) {
+        aTitle.appendChild(heading.firstChild);
+      }
+      heading.insertBefore(aTitle, span);
+    }
+
+    // Convert glyph to link to the internal permalink.
+    var aGlyph = document.createElement('a');
+    aGlyph.href = permalink || '#';
+    aGlyph.className = 'commentary-permalink-glyph-link';
+    aGlyph.setAttribute('rel','noopener');
+    aGlyph.setAttribute('title','Permalink');
+    aGlyph.setAttribute('aria-label','internal-permalink');
+    aGlyph.appendChild(document.createTextNode(span.textContent || '∞'));
+    span.replaceWith(aGlyph);
   });
 });
 JS;
@@ -777,6 +856,13 @@ function register_settings(): void {
 		'default'           => 'link',
 	]);
 
+	// Show/Hide glyph on single post pages
+	register_setting(OPT_GROUP, OPT_SHOW_GLYPH_SINGLE, [
+		'type'              => 'boolean',
+		'sanitize_callback' => fn($v): bool => (bool) $v,
+		'default'           => 1,
+	]);
+
 	add_settings_section(
 		'commentary_main',
 		__('Commentary Settings', 'commentary'),
@@ -805,6 +891,19 @@ function register_settings(): void {
 			$val = (bool) get_option(OPT_EXCLUDE_MAIN, 0);
 			echo '<label><input type="checkbox" name="' . esc_attr(OPT_EXCLUDE_MAIN) . '" value="1" ' . checked(true, $val, false) . ' />';
 			echo ' ' . esc_html__('Hide posts in the “Commentary” category from the home/posts page loop.', 'commentary') . '</label>';
+		},
+		'commentary_settings',
+		'commentary_main'
+	);
+
+	add_settings_field(
+		OPT_SHOW_GLYPH_SINGLE,
+		__('Show glyph on single post pages', 'commentary'),
+		function() {
+			$val = (bool) get_option(OPT_SHOW_GLYPH_SINGLE, 1);
+			echo '<label><input type="checkbox" name="' . esc_attr(OPT_SHOW_GLYPH_SINGLE) . '" value="1" ' . checked(true, $val, false) . ' />';
+			echo ' ' . esc_html__('Display the glyph next to the title on single Commentary posts.', 'commentary') . '</label>';
+			echo '<p class="description">' . esc_html__('When off, titles still link to the external URL (if present); only the glyph is hidden on single views.', 'commentary') . '</p>';
 		},
 		'commentary_settings',
 		'commentary_main'
@@ -892,6 +991,15 @@ a.commentary-permalink-glyph-link:hover {
   text-decoration: none;
 }
 CSS;
+
+	// Optionally hide glyph on single post pages while preserving link behavior.
+	if (is_singular('post') && !get_option(OPT_SHOW_GLYPH_SINGLE, 1)) {
+		$css .= "\n/* Hide glyph on single post pages (plugin setting) */\n" .
+			".single .commentary-permalink-glyph,\n" .
+			".single a.commentary-permalink-glyph-link {\n" .
+			"  display: none !important;\n" .
+			"}\n";
+	}
 	wp_register_style('commentary-inline', false, [], null);
 	wp_enqueue_style('commentary-inline');
 	wp_add_inline_style('commentary-inline', $css);
